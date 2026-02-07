@@ -153,7 +153,11 @@ export class TradingService {
         orderType
       );
 
-      console.log(`[Trading] Order response:`, JSON.stringify(order, null, 2));
+      // Safe log - avoid circular structure errors from proxy agents
+      try {
+        const safeOrder = order ? { orderID: order.orderID, status: order.status, ...( order.errorMsg ? { errorMsg: order.errorMsg } : {}) } : order;
+        console.log(`[Trading] Order response:`, JSON.stringify(safeOrder));
+      } catch { console.log(`[Trading] Order response: [object]`); }
 
       if (order && order.orderID) {
         this.activeOrders.set(order.orderID, {
@@ -166,14 +170,12 @@ export class TradingService {
         });
         console.log(`[Trading] ✓ Order placed successfully: ${order.orderID}`);
       } else {
-        console.log(`[Trading] ⚠ Order created but no orderID returned:`, order);
+        console.log(`[Trading] ⚠ Order created but no orderID returned`);
       }
 
       return order;
     } catch (error) {
       console.error("[Trading] ✗ Failed to place order:", error.message);
-      console.error("[Trading] Error details:", error);
-      console.error("[Trading] Error stack:", error.stack);
       throw error;
     }
   }
