@@ -39,10 +39,10 @@ export const CONFIG = {
   trading: {
     enabled: (process.env.TRADING_ENABLED || "false").toLowerCase() === "true",
     privateKey: process.env.PRIVATE_KEY || "",
-    minConfidence: Number(process.env.TRADING_MIN_CONFIDENCE) || 65,  // SURVIVAL: 65% minimum (selective but tradeable)
+    minConfidence: Number(process.env.TRADING_MIN_CONFIDENCE) || 60,  // SURVIVAL: 60% minimum
     orderSize: Number(process.env.TRADING_ORDER_SIZE) || 3,  // SURVIVAL: $3 max per trade (6% of $50)
     maxPositionSize: Number(process.env.TRADING_MAX_POSITION_SIZE) || 3,  // SURVIVAL: ONE trade per market
-    minEdge: Number(process.env.TRADING_MIN_EDGE) || 0.18,  // SURVIVAL: 18% edge minimum (realistic threshold)
+    minEdge: Number(process.env.TRADING_MIN_EDGE) || 0.10,  // SURVIVAL: 10% edge minimum (works with Chainlink fallback)
     cooldownMs: Number(process.env.TRADING_COOLDOWN_MS) || 900000,  // SURVIVAL: 15 min cooldown (1 per candle)
     dryRun: (process.env.TRADING_DRY_RUN || "false").toLowerCase() === "true",
     maxCapitalRisk: Number(process.env.TRADING_MAX_CAPITAL_RISK) || 0.06,  // SURVIVAL: Max 6% of capital per trade

@@ -837,7 +837,7 @@ async function main() {
           }
           
           // Rate limits
-          tradingLines.push(kv("Trades/Hr:", `${stats.tradesThisHour ?? 0}/2 | Markets: ${stats.tradedMarkets ?? 0}`));
+          tradingLines.push(kv("Trades/Hr:", `${stats.tradesThisHour ?? 0}/${CONFIG.trading.maxTradesPerHour ?? 4} | Markets: ${stats.tradedMarkets ?? 0}`));
         }
         
         if (tradeResult) {
