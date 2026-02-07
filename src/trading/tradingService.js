@@ -129,14 +129,25 @@ export class TradingService {
       console.log(`[Trading] Creating order: ${side} ${size} shares at $${price.toFixed(3)}`);
       console.log(`[Trading] Token ID: ${tokenId}, Price: ${price}, Size: ${size}`);
       
+      // Fetch the actual fee rate for this market
+      let feeRate = 1000; // Default to 10% (1000 bps)
+      try {
+        const feeData = await this.client.getFeeRate(tokenId);
+        if (feeData && feeData.feeRateBps) {
+          feeRate = parseInt(feeData.feeRateBps);
+          console.log(`[Trading] Market fee rate: ${feeRate} bps (${(feeRate / 100).toFixed(2)}%)`);
+        }
+      } catch (e) {
+        console.log(`[Trading] Could not fetch fee rate, using default 1000 bps`);
+      }
+      
       // v4 CLOB client: createOrder + postOrder (two steps)
-      // feeRateBps: 1000 = Polymarket's current maker fee (10%)
       const orderArgs = {
         tokenID: tokenId,
         price: price,
         side: side.toUpperCase(),
         size: size,
-        feeRateBps: 1000
+        feeRateBps: feeRate
       };
       
       const options = {
