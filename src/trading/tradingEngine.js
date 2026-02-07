@@ -63,11 +63,11 @@ export class TradingEngine {
     if (marketData.marketEndTime) {
       const msLeft = marketData.marketEndTime - now;
       const minLeft = msLeft / 60000;
-      if (minLeft > 13) {
-        return { shouldTrade: false, reason: `Too early in candle (${minLeft.toFixed(0)}min left, wait for min 2+)` };
+      if (minLeft > 14) {
+        return { shouldTrade: false, reason: `Too early in candle (${minLeft.toFixed(0)}min left, wait for min 1+)` };
       }
-      if (minLeft < 4) {
-        return { shouldTrade: false, reason: `Too late in candle (${minLeft.toFixed(0)}min left, need 4+ min)` };
+      if (minLeft < 2) {
+        return { shouldTrade: false, reason: `Too late in candle (${minLeft.toFixed(0)}min left, need 2+ min)` };
       }
     }
 
@@ -148,7 +148,7 @@ export class TradingEngine {
         else if (indicators.heikenColor === "red") bearishCount++;
       }
 
-      const requiredConsensus = 3;  // SURVIVAL: Need 3/5 indicators agreeing (majority)
+      const requiredConsensus = 2;  // Need 2/5 indicators agreeing (relaxed for Chainlink fallback)
       const agreeingCount = direction === "LONG" ? bullishCount : bearishCount;
       
       if (totalIndicators >= 4 && agreeingCount < requiredConsensus) {
@@ -165,19 +165,6 @@ export class TradingEngine {
         shouldTrade: false,
         reason: `Spread too wide (${(marketData.spread * 100).toFixed(1)}% > 4%)`
       };
-    }
-
-    // SURVIVAL RULE #10: Price momentum confirmation
-    // If going LONG, current price must be above price-to-beat
-    // If going SHORT, current price must be below price-to-beat
-    if (marketData.priceToBeat !== null && marketData.priceToBeat !== undefined && currentPrice !== null) {
-      const priceAboveBeat = currentPrice > marketData.priceToBeat;
-      if (direction === "LONG" && !priceAboveBeat) {
-        return { shouldTrade: false, reason: `Price momentum disagrees (price below beat for LONG)` };
-      }
-      if (direction === "SHORT" && priceAboveBeat) {
-        return { shouldTrade: false, reason: `Price momentum disagrees (price above beat for SHORT)` };
-      }
     }
 
     return {
