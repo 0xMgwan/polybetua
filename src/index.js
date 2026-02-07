@@ -6,17 +6,8 @@ if (!globalThis.crypto.subtle) globalThis.crypto.subtle = webcrypto.subtle;
 import dotenv from "dotenv";
 dotenv.config();
 
-// Configure axios to use proxy for Polymarket CLOB client (bypasses Cloudflare blocks)
-import axios from "axios";
-import { HttpsProxyAgent } from "https-proxy-agent";
-const proxyUrl = process.env.HTTPS_PROXY || process.env.https_proxy || process.env.ALL_PROXY || process.env.all_proxy || "";
-if (proxyUrl) {
-  const agent = new HttpsProxyAgent(proxyUrl);
-  axios.defaults.httpAgent = agent;
-  axios.defaults.httpsAgent = agent;
-  axios.defaults.proxy = false; // Disable axios built-in proxy, use agent instead
-  console.log(`✓ Proxy configured: ${proxyUrl.replace(/:[^:@]+@/, ':***@')}`);
-}
+// Note: HTTP_PROXY/HTTPS_PROXY env vars are automatically used by axios (v4 CLOB client)
+// No manual configuration needed - just set the env vars in Railway
 
 import { CONFIG } from "./config.js";
 import { fetchKlines, fetchLastPrice } from "./data/binance.js";
