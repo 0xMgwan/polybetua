@@ -7,12 +7,13 @@
     "start": "node src/index.js"
   },
   "dependencies": {
-    "@polymarket/clob-client": "^5.2.1",
+    "@polymarket/clob-client": "^4.14.0",
     "axios": "^1.7.0",
     "dotenv": "^17.2.4",
     "ethers": "^5.8.0",
     "https-proxy-agent": "^7.0.6",
     "socks-proxy-agent": "^8.0.5",
+    "tslib": "^2.8.1",
     "undici": "^6.21.3",
     "ws": "^8.18.0"
   }

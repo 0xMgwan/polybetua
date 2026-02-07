@@ -129,8 +129,7 @@ export class TradingService {
       console.log(`[Trading] Creating order: ${side} ${size} shares at $${price.toFixed(3)}`);
       console.log(`[Trading] Token ID: ${tokenId}, Price: ${price}, Size: ${size}`);
       
-      // Use CLOB client to create and post order with market options
-      // tickSize and negRisk are market-specific parameters
+      // v4 CLOB client: createOrder + postOrder (two steps)
       const orderArgs = {
         tokenID: tokenId,
         price: price,
@@ -139,19 +138,18 @@ export class TradingService {
       };
       
       const options = {
-        tickSize: "0.01", // Standard tick size for most Polymarket markets
-        negRisk: false     // Most markets are not negRisk
+        tickSize: "0.01",
+        negRisk: false
       };
       
-      console.log(`[Trading] Order args:`, orderArgs);
-      console.log(`[Trading] Options:`, options);
+      console.log(`[Trading] Order args:`, JSON.stringify(orderArgs));
       
-      // Use createAndPostOrder - standard method from Polymarket agents
-      const order = await this.client.createAndPostOrder(
-        orderArgs,
-        options,
-        orderType
-      );
+      // Step 1: Create signed order
+      const signedOrder = await this.client.createOrder(orderArgs, options);
+      console.log(`[Trading] Order signed, posting...`);
+      
+      // Step 2: Post order to CLOB
+      const order = await this.client.postOrder(signedOrder, orderType);
 
       // Safe log - avoid circular structure errors from proxy agents
       try {
