@@ -34,12 +34,6 @@ export class TradingEngine {
       return { shouldTrade: false, reason: "Trading disabled" };
     }
 
-    // CIRCUIT BREAKER: Check if we should stop trading
-    const circuitBreaker = this.positionTracker.shouldStopTrading();
-    if (circuitBreaker.stop) {
-      return { shouldTrade: false, reason: `CIRCUIT BREAKER: ${circuitBreaker.reason}` };
-    }
-
     // SURVIVAL RULE #1: ONE trade per market - never double down
     const slug = marketData.marketSlug || "";
     if (slug && this.tradedMarkets.has(slug)) {
