@@ -179,7 +179,7 @@ export class TradingEngine {
     };
   }
 
-  async executeTrade(signal, marketData) {
+  async executeTrade(signal, marketData, priceToBeat = null) {
     if (!signal.shouldTrade) {
       return { success: false, reason: signal.reason };
     }
@@ -261,7 +261,8 @@ export class TradingEngine {
         confidence: signal.confidence,
         edge: signal.edge,
         marketSlug: marketData.marketSlug,
-        marketEndTime: marketData.marketEndTime || null
+        marketEndTime: marketData.marketEndTime || null,
+        priceToBeat  // Store market opening price for correct win/loss determination
       });
 
       return {

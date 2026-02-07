@@ -88,7 +88,7 @@ export async function initializeTrading() {
   }
 }
 
-export async function evaluateAndTrade(prediction, marketData, currentPrice, indicators = {}) {
+export async function evaluateAndTrade(prediction, marketData, currentPrice, indicators = {}, priceToBeat = null) {
   if (!tradingEngine || !CONFIG.trading.enabled) {
     return { traded: false, reason: "Trading not enabled" };
   }
@@ -108,7 +108,7 @@ export async function evaluateAndTrade(prediction, marketData, currentPrice, ind
     return { traded: false, signal, reason: signal.reason };
   }
 
-  const result = await tradingEngine.executeTrade(signal, marketData);
+  const result = await tradingEngine.executeTrade(signal, marketData, priceToBeat);
   
   return {
     traded: result.success,

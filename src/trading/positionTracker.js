@@ -19,7 +19,7 @@ export class PositionTracker {
   }
 
   // Record a new position when an order is placed
-  addPosition({ orderId, direction, outcome, price, size, confidence, edge, marketSlug, marketEndTime }) {
+  addPosition({ orderId, direction, outcome, price, size, confidence, edge, marketSlug, marketEndTime, priceToBeat }) {
     const position = {
       orderId,
       direction,       // "LONG" or "SHORT"
@@ -31,6 +31,7 @@ export class PositionTracker {
       edge,
       marketSlug,
       marketEndTime,   // When the 15m market resolves
+      priceToBeat,     // Market opening price - used to determine win/loss
       openedAt: Date.now(),
       status: "OPEN",  // OPEN -> RESOLVED_WIN / RESOLVED_LOSS
       pnl: null,
@@ -59,9 +60,12 @@ export class PositionTracker {
         // Determine outcome
         let won = false;
         
-        if (priceToBeat !== null && currentPrice !== null) {
-          const btcWentUp = currentPrice > priceToBeat;
-          const btcWentDown = currentPrice <= priceToBeat;
+        // Use stored priceToBeat from position, fall back to passed parameter
+        const ptb = pos.priceToBeat !== null && pos.priceToBeat !== undefined ? pos.priceToBeat : priceToBeat;
+        
+        if (ptb !== null && currentPrice !== null) {
+          const btcWentUp = currentPrice > ptb;
+          const btcWentDown = currentPrice <= ptb;
           
           if (pos.outcome === "Up" && btcWentUp) won = true;
           if (pos.outcome === "Down" && btcWentDown) won = true;

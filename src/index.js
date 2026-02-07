@@ -717,7 +717,7 @@ async function main() {
           heikenColor: consec.color ?? null
         };
 
-        tradeResult = await evaluateAndTrade(prediction, marketData, currentPrice, indicators);
+        tradeResult = await evaluateAndTrade(prediction, marketData, currentPrice, indicators, priceToBeat);
       }
 
       if (marketSlug && priceToBeatState.slug !== marketSlug) {
