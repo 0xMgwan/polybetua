@@ -34,8 +34,27 @@ export async function initializeTrading() {
     log("Creating TradingService with private key...");
     tradingService = new TradingService(CONFIG.trading.privateKey);
     
-    log("Initializing TradingService...");
-    await tradingService.initialize();
+    log("Initializing TradingService with 30s timeout...");
+    // Add timeout to prevent hanging on CLOB initialization
+    const initPromise = tradingService.initialize();
+    const timeoutPromise = new Promise((_, reject) => 
+      setTimeout(() => reject(new Error("CLOB initialization timeout")), 30000)
+    );
+    
+    try {
+      await Promise.race([initPromise, timeoutPromise]);
+    } catch (err) {
+      if (err.message === "CLOB initialization timeout") {
+        log("CLOB initialization timed out - continuing without trading");
+        return { 
+          enabled: false, 
+          message: "CLOB initialization timeout - trading disabled",
+          walletAddress: null,
+          dryRun: false
+        };
+      }
+      throw err;
+    }
 
     log("Creating TradingEngine...");
     tradingEngine = new TradingEngine(tradingService, {
