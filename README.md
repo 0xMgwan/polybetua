@@ -23,16 +23,17 @@ A real-time auto-trading bot for Polymarket **"Bitcoin Up or Down" 15-minute** m
 
 | Rule | Value |
 |------|-------|
-| Max per trade | $3 (6% of capital) |
-| Min confidence | 65% |
-| Min edge | 18% over market price |
-| Indicator consensus | 3/5 must agree |
+| Max per trade | $3-$5 (depends on min 5 shares) |
+| Min confidence | 60% (relaxed for Chainlink fallback) |
+| Min edge | 10% (relaxed for Chainlink fallback) |
+| Indicator consensus | 2/5 must agree (relaxed) |
 | Trades per market | 1 (no doubling down) |
-| Trades per hour | 2 max |
+| Trades per hour | 4 max (one per 15min candle) |
 | Cooldown | 15 minutes |
-| Time window | Minutes 2-12 of candle |
+| Time window | Minutes 1+ of candle |
 | Token price cap | Under $0.85 |
-| Circuit breaker | 3 consecutive losses, -$8 drawdown, or <30% win rate |
+| Min order size | 5 shares (Polymarket minimum) |
+| Circuit breaker | Removed - continuous trading mode |
 
 ---
 
@@ -114,21 +115,44 @@ git push origin main
 
 In Railway dashboard > **Variables**, add:
 
+**Required for Trading:**
+
+| Variable | Value | Notes |
+|----------|-------|-------|
+| `PRIVATE_KEY` | Your wallet private key | Without `0x` prefix |
+| `PROXY_WALLET` | Your Polymarket wallet address | Same as your MetaMask wallet |
+| `TRADING_ENABLED` | `true` | Enable auto-trading |
+| `TRADING_DRY_RUN` | `false` | Actually place orders |
+
+**Survival Mode Parameters:**
+
+| Variable | Value | Notes |
+|----------|-------|-------|
+| `TRADING_MIN_CONFIDENCE` | `60` | Relaxed for Chainlink fallback |
+| `TRADING_ORDER_SIZE` | `3` | Max $3 per trade (min 5 shares) |
+| `TRADING_MIN_EDGE` | `0.10` | 10% edge minimum |
+| `TRADING_MAX_TRADES_PER_HOUR` | `4` | One per 15-min candle |
+| `TRADING_MAX_DAILY_LOSS` | `8` | Stop after $8 loss |
+| `TRADING_MAX_TOKEN_PRICE` | `0.85` | Only buy under $0.85 |
+
+**Polymarket & Polygon:**
+
 | Variable | Value |
 |----------|-------|
-| `PRIVATE_KEY` | Your wallet private key |
-| `TRADING_ENABLED` | `true` |
-| `TRADING_DRY_RUN` | `false` |
-| `TRADING_MIN_CONFIDENCE` | `65` |
-| `TRADING_ORDER_SIZE` | `3` |
-| `TRADING_MIN_EDGE` | `0.18` |
-| `TRADING_MAX_TRADES_PER_HOUR` | `2` |
-| `TRADING_MAX_DAILY_LOSS` | `8` |
-| `TRADING_MAX_TOKEN_PRICE` | `0.85` |
 | `POLYMARKET_AUTO_SELECT_LATEST` | `true` |
 | `POLYGON_RPC_URL` | `https://polygon-rpc.com` |
 | `POLYGON_RPC_URLS` | `https://polygon-rpc.com,https://rpc.ankr.com/polygon` |
-| `POLYGON_WSS_URLS` | `wss://polygon-bor-rpc.publicnode.com` |
+
+**Bright Data Proxy (Required for Railway):**
+
+Polymarket blocks datacenter IPs. Use Bright Data residential proxy:
+
+| Variable | Value | Notes |
+|----------|-------|-------|
+| `HTTP_PROXY` | `http://brd-customer-hl_06c8577c-zone-isp_proxy1-ip-31.204.51.105:pk6x1bjxnpuq@brd.superproxy.io:33335` | ISP proxy for Polymarket |
+| `HTTPS_PROXY` | `http://brd-customer-hl_06c8577c-zone-isp_proxy1-ip-31.204.51.105:pk6x1bjxnpuq@brd.superproxy.io:33335` | Same as HTTP_PROXY |
+
+> **Note:** Replace the Bright Data credentials with your own from your Bright Data dashboard.
 
 ### 4. Deploy
 
@@ -204,11 +228,21 @@ src/
 
 ## Troubleshooting
 
+### Local Development
+
 - **Bot not trading?** Check that `TRADING_ENABLED=true` and `TRADING_DRY_RUN=false` in your `.env`
-- **"Circuit breaker" message?** The bot stopped trading after losses. Delete `logs/pnl.json` and restart
-- **"Too early/late in candle"?** Normal - bot only trades during minutes 2-12 of each 15-min candle
+- **"Too early/late in candle"?** Normal - bot only trades during minutes 1+ of each 15-min candle
 - **"Price too high"?** The token price exceeds `TRADING_MAX_TOKEN_PRICE` - wait for a better entry
 - **No Chainlink updates?** Ensure Polygon RPC URLs are configured correctly
+
+### Railway Deployment
+
+- **"Cloudflare 403 Forbidden"?** Railway's datacenter IP is blocked. Add `HTTP_PROXY` and `HTTPS_PROXY` env vars with Bright Data credentials
+- **"Maker (Proxy wallet): undefined"?** Add `PROXY_WALLET` env var with your Polymarket wallet address
+- **"Invalid fee rate (0)"?** The bot now fetches fee rates dynamically. If it still fails, ensure `@polymarket/clob-client@^4.14.0` is installed
+- **"Size lower than minimum: 5"?** The bot enforces Polymarket's 5-share minimum. Order size is calculated as `$3 / price` with a floor of 5 shares
+- **"Order created but no orderID returned"?** Check Railway logs for the actual error. Common causes: fee rate, minimum size, or proxy issues
+- **Bot keeps restarting?** Check Railway logs for errors. Common issues: missing env vars, proxy auth failure, or RPC rate limits
 
 ## Disclaimer
 
