@@ -130,11 +130,13 @@ export class TradingService {
       console.log(`[Trading] Token ID: ${tokenId}, Price: ${price}, Size: ${size}`);
       
       // v4 CLOB client: createOrder + postOrder (two steps)
+      // feeRateBps: 1000 = Polymarket's current maker fee (10%)
       const orderArgs = {
         tokenID: tokenId,
         price: price,
         side: side.toUpperCase(),
-        size: size
+        size: size,
+        feeRateBps: 1000
       };
       
       const options = {
