@@ -399,6 +399,59 @@ async function fetchPolymarketSnapshot() {
   };
 }
 
+// Chainlink price buffer - builds synthetic klines when Binance is unavailable
+const chainlinkPriceBuffer = {
+  prices: [],       // { price, ts }
+  maxSize: 300,     // Keep 300 ticks (~5 hours at 1/min)
+  
+  addPrice(price) {
+    if (!price || !Number.isFinite(price)) return;
+    this.prices.push({ price, ts: Date.now() });
+    if (this.prices.length > this.maxSize) this.prices.shift();
+  },
+  
+  // Build synthetic 1-minute klines from collected prices
+  buildKlines(intervalMs = 60000, limit = 240) {
+    if (this.prices.length < 2) return null;
+    
+    const now = Date.now();
+    const klines = [];
+    
+    for (let i = 0; i < limit; i++) {
+      const bucketEnd = now - i * intervalMs;
+      const bucketStart = bucketEnd - intervalMs;
+      const inBucket = this.prices.filter(p => p.ts >= bucketStart && p.ts < bucketEnd);
+      
+      if (inBucket.length === 0) {
+        // Fill with nearest known price
+        const nearest = this.prices.reduce((best, p) => 
+          Math.abs(p.ts - bucketStart) < Math.abs(best.ts - bucketStart) ? p : best
+        );
+        klines.unshift({
+          openTime: bucketStart,
+          open: nearest.price,
+          high: nearest.price,
+          low: nearest.price,
+          close: nearest.price,
+          volume: 0,
+          closeTime: bucketEnd
+        });
+      } else {
+        klines.unshift({
+          openTime: bucketStart,
+          open: inBucket[0].price,
+          high: Math.max(...inBucket.map(p => p.price)),
+          low: Math.min(...inBucket.map(p => p.price)),
+          close: inBucket[inBucket.length - 1].price,
+          volume: inBucket.length * 100,
+          closeTime: bucketEnd
+        });
+      }
+    }
+    return klines;
+  }
+};
+
 async function main() {
   const binanceStream = startBinanceTradeStream({ symbol: CONFIG.symbol });
   const polymarketLiveStream = startPolymarketChainlinkPriceStream({});
@@ -463,7 +516,7 @@ async function main() {
           ? Promise.resolve({ price: chainlinkWsPrice, updatedAt: chainlinkWsTick?.updatedAt ?? null, source: "chainlink_ws" })
           : fetchChainlinkBtcUsd();
 
-      const [klines1m, klines5m, lastPrice, chainlink, poly] = await Promise.all([
+      const [klines1mRaw, klines5mRaw, lastPriceRaw, chainlink, poly] = await Promise.all([
         fetchKlines({ interval: "1m", limit: 240 }),
         fetchKlines({ interval: "5m", limit: 200 }),
         fetchLastPrice(),
@@ -471,8 +524,16 @@ async function main() {
         fetchPolymarketSnapshot()
       ]);
 
-      // Skip this iteration if Binance data is unavailable (geo-blocked)
-      if (!klines1m || !klines5m) {
+      // Add Chainlink price to buffer for synthetic klines
+      if (chainlink?.price) chainlinkPriceBuffer.addPrice(chainlink.price);
+
+      // Use Binance klines if available, otherwise build synthetic klines from Chainlink
+      const klines1m = klines1mRaw || chainlinkPriceBuffer.buildKlines(60000, 240);
+      const klines5m = klines5mRaw || chainlinkPriceBuffer.buildKlines(300000, 200);
+      const lastPrice = lastPriceRaw || chainlink?.price || null;
+
+      // Need at least some price data to continue
+      if (!klines1m || !lastPrice) {
         await sleep(CONFIG.pollIntervalMs);
         continue;
       }
