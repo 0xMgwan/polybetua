@@ -196,19 +196,22 @@ export class TradingEngine {
       const side = "BUY";
       const price = Math.min(0.99, signal.marketPrice + 0.01);
       
-      // SURVIVAL: Fixed small size - $3 max per trade
+      // SURVIVAL: Fixed small size per trade
       // orderSize is in dollars, calculate shares based on price
-      const maxOrderDollars = this.config.orderSize;  // $3
-      const size = Math.floor(maxOrderDollars / price);  // shares = dollars / price
+      const maxOrderDollars = this.config.orderSize;
+      const MIN_SHARES = 5; // Polymarket minimum order size
+      let size = Math.floor(maxOrderDollars / price);
       
-      if (size < 1) {
-        return { success: false, reason: `Price too high for $${maxOrderDollars} order (need ${(maxOrderDollars / 0.99).toFixed(0)}+ shares)` };
+      // Ensure we meet Polymarket's minimum of 5 shares
+      if (size < MIN_SHARES) {
+        size = MIN_SHARES;
       }
       
-      // Verify cost doesn't exceed budget
+      // Verify cost doesn't exceed hard cap ($5 max to cover min 5 shares at higher prices)
       const maxCost = price * size;
-      if (maxCost > maxOrderDollars * 1.1) {  // Allow 10% buffer for slippage
-        return { success: false, reason: `Cost too high ($${maxCost.toFixed(2)} > $${(maxOrderDollars * 1.1).toFixed(2)})` };
+      const hardCap = Math.max(maxOrderDollars * 1.5, MIN_SHARES * 0.99); // ~$5 hard cap
+      if (maxCost > hardCap) {
+        return { success: false, reason: `Cost too high ($${maxCost.toFixed(2)} > $${hardCap.toFixed(2)})` };
       }
 
       const order = await this.tradingService.placeOrder({
