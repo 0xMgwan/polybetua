@@ -1,3 +1,8 @@
+// Polyfill Web Crypto API for environments where globalThis.crypto is missing (e.g. Railway)
+import { webcrypto } from "node:crypto";
+if (!globalThis.crypto) globalThis.crypto = webcrypto;
+if (!globalThis.crypto.subtle) globalThis.crypto.subtle = webcrypto.subtle;
+
 import dotenv from "dotenv";
 dotenv.config();
 
@@ -903,9 +908,12 @@ async function main() {
         rec.action === "ENTER" ? `${rec.side}:${rec.phase}:${rec.strength}` : "NO_TRADE"
       ]);
     } catch (err) {
-      console.log("────────────────────────────");
-      console.log(`Error: ${err?.message ?? String(err)}`);
-      console.log("────────────────────────────");
+      const msg = err?.message ?? String(err);
+      if (!main._lastErr || main._lastErr !== msg || Date.now() - (main._lastErrTs || 0) > 60000) {
+        console.log(`Error: ${msg}`);
+        main._lastErr = msg;
+        main._lastErrTs = Date.now();
+      }
     }
 
     await sleep(CONFIG.pollIntervalMs);
