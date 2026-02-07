@@ -471,6 +471,12 @@ async function main() {
         fetchPolymarketSnapshot()
       ]);
 
+      // Skip this iteration if Binance data is unavailable (geo-blocked)
+      if (!klines1m || !klines5m) {
+        await sleep(CONFIG.pollIntervalMs);
+        continue;
+      }
+
       const settlementMs = poly.ok && poly.market?.endDate ? new Date(poly.market.endDate).getTime() : null;
       const settlementLeftMin = settlementMs ? (settlementMs - Date.now()) / 60_000 : null;
 
