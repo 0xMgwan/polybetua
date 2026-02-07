@@ -1,3 +1,6 @@
+import dotenv from "dotenv";
+dotenv.config();
+
 import { CONFIG } from "./config.js";
 import { fetchKlines, fetchLastPrice } from "./data/binance.js";
 import { fetchChainlinkBtcUsd } from "./data/chainlink.js";
@@ -21,6 +24,7 @@ import { scoreDirection, applyTimeAwareness } from "./engines/probability.js";
 import { computeEdge, decide } from "./engines/edge.js";
 import { appendCsvRow, formatNumber, formatPct, getCandleWindowTiming, sleep } from "./utils.js";
 import { startBinanceTradeStream } from "./data/binanceWs.js";
+import { initializeTrading, evaluateAndTrade, getTradingStats, checkResolutions, cleanupStalePositions } from "./trading/index.js";
 import fs from "node:fs";
 import path from "node:path";
 import readline from "node:readline";
@@ -400,6 +404,27 @@ async function main() {
   const polymarketLiveStream = startPolymarketChainlinkPriceStream({});
   const chainlinkStream = startChainlinkPriceStream({});
 
+  let tradingStatus = null;
+  try {
+    console.log(`\n${ANSI.white}Initializing trading module...${ANSI.reset}`);
+    tradingStatus = await initializeTrading();
+    console.log(`Trading status result:`, tradingStatus);
+    if (tradingStatus.enabled) {
+      console.log(`\n${ANSI.green}✓${ANSI.reset} ${tradingStatus.message}`);
+      console.log(`${ANSI.white}Wallet:${ANSI.reset} ${tradingStatus.walletAddress}`);
+      if (tradingStatus.dryRun) {
+        console.log(`${ANSI.yellow}⚠ DRY RUN MODE - No real trades will be executed${ANSI.reset}`);
+      }
+      console.log("");
+    } else {
+      console.log(`\n${ANSI.yellow}⚠${ANSI.reset} Trading disabled: ${tradingStatus.message}\n`);
+    }
+  } catch (error) {
+    console.log(`\n${ANSI.red}✗${ANSI.reset} Trading initialization failed: ${error.message}`);
+    console.log(`Error details:`, error);
+    console.log("");
+  }
+
   let prevSpotPrice = null;
   let prevCurrentPrice = null;
   let priceToBeatState = { slug: null, value: null, setAtMs: null };
@@ -582,6 +607,44 @@ async function main() {
       const marketSlug = poly.ok ? String(poly.market?.slug ?? "") : "";
       const marketStartMs = poly.ok && poly.market?.eventStartTime ? new Date(poly.market.eventStartTime).getTime() : null;
 
+      let tradeResult = null;
+      if (tradingStatus?.enabled && poly.ok) {
+        // Check if any positions should be resolved
+        const ptb = priceToBeatState.slug === marketSlug ? priceToBeatState.value : null;
+        checkResolutions(currentPrice, ptb);
+        cleanupStalePositions();
+
+        const prediction = {
+          longPct: pLong ? pLong * 100 : 0,
+          shortPct: pShort ? pShort * 100 : 0
+        };
+
+        // Parse market end time for position tracking
+        const marketEndTime = poly.market?.endDate ? new Date(poly.market.endDate).getTime() : null;
+
+        const marketData = {
+          upPrice: marketUp,
+          downPrice: marketDown,
+          upTokenId: poly.tokens?.upTokenId,
+          downTokenId: poly.tokens?.downTokenId,
+          marketSlug: marketSlug,
+          marketEndTime: marketEndTime,
+          spread: poly.orderbook?.up?.spread ?? null,
+          priceToBeat: ptb
+        };
+
+        // Pass indicator data for consensus check
+        const indicators = {
+          priceVsVwap: (lastPrice && vwapNow) ? lastPrice - vwapNow : undefined,
+          vwapSlope: vwapSlope,
+          rsi: rsiNow,
+          macdHist: macd?.hist ?? null,
+          heikenColor: consec.color ?? null
+        };
+
+        tradeResult = await evaluateAndTrade(prediction, marketData, currentPrice, indicators);
+      }
+
       if (marketSlug && priceToBeatState.slug !== marketSlug) {
         priceToBeatState = { slug: marketSlug, value: null, setAtMs: null };
       }
@@ -667,6 +730,54 @@ async function main() {
               : ANSI.reset)
         : ANSI.reset;
 
+      const tradingLines = [];
+      if (tradingStatus?.enabled) {
+        const stats = getTradingStats();
+        const statusColor = tradingStatus.dryRun ? ANSI.yellow : ANSI.green;
+        const statusText = tradingStatus.dryRun ? "DRY RUN" : "SURVIVAL MODE";
+        tradingLines.push(kv("TRADING:", `${statusColor}${statusText}${ANSI.reset} ${ANSI.dim}($3 max/trade)${ANSI.reset}`));
+        
+        if (stats) {
+          // P&L Display
+          if (stats.pnl) {
+            const pnl = stats.pnl;
+            
+            // Total P&L (most important - show first)
+            const pnlColor = pnl.totalPnl >= 0 ? ANSI.green : ANSI.red;
+            const pnlSign = pnl.totalPnl >= 0 ? "+" : "";
+            tradingLines.push(kv("P&L:", `${pnlColor}${pnlSign}$${pnl.totalPnl.toFixed(2)}${ANSI.reset}`));
+            
+            // Win/Loss record
+            const winColor = pnl.wins > 0 ? ANSI.green : ANSI.gray;
+            const lossColor = pnl.losses > 0 ? ANSI.red : ANSI.gray;
+            tradingLines.push(kv("Record:", `${winColor}${pnl.wins}W${ANSI.reset} / ${lossColor}${pnl.losses}L${ANSI.reset}${pnl.totalTrades > 0 ? ` (${pnl.winRate.toFixed(0)}%)` : ""}`));
+            
+            // Streak
+            if (pnl.currentStreak > 0 && pnl.streakType) {
+              const streakColor = pnl.streakType === "WIN" ? ANSI.green : ANSI.red;
+              tradingLines.push(kv("Streak:", `${streakColor}${pnl.currentStreak}x ${pnl.streakType}${ANSI.reset}`));
+            }
+            
+            // Open positions
+            if (pnl.openPositions > 0) {
+              tradingLines.push(kv("Open Pos:", `${ANSI.yellow}${pnl.openPositions} awaiting resolution${ANSI.reset}`));
+            }
+          }
+          
+          // Rate limits
+          tradingLines.push(kv("Trades/Hr:", `${stats.tradesThisHour ?? 0}/2 | Markets: ${stats.tradedMarkets ?? 0}`));
+        }
+        
+        if (tradeResult) {
+          if (tradeResult.traded) {
+            const tradeColor = tradeResult.signal?.direction === "LONG" ? ANSI.green : ANSI.red;
+            tradingLines.push(kv("EXECUTED:", `${tradeColor}${tradeResult.reason}${ANSI.reset}`));
+          } else if (tradeResult.reason) {
+            tradingLines.push(kv("Status:", `${ANSI.dim}${tradeResult.reason}${ANSI.reset}`));
+          }
+        }
+      }
+
       const lines = [
         titleLine,
         marketLine,
@@ -692,6 +803,10 @@ async function main() {
         sepLine(),
         "",
         binanceSpotKvLine,
+        tradingLines.length > 0 ? "" : null,
+        tradingLines.length > 0 ? sepLine() : null,
+        tradingLines.length > 0 ? "" : null,
+        ...tradingLines,
         "",
         sepLine(),
         "",

@@ -6,3 +6,17 @@ logs/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+
+# Utility scripts (not part of core bot)
+approve-*.js
+deposit-*.js
+swap-*.js
+authorize-*.js
+register-*.js
+config.txt
+
+# Extra docs (info merged into README)
+QUICK_START_TRADING.md
+TRADING_SETUP.md
+STRATEGY_IMPROVEMENTS.md
+RAILWAY_DEPLOYMENT.md

@@ -7,7 +7,9 @@
     "start": "node src/index.js"
   },
   "dependencies": {
-    "ethers": "^6.11.1",
+    "@polymarket/clob-client": "^5.2.1",
+    "dotenv": "^17.2.4",
+    "ethers": "^5.8.0",
     "https-proxy-agent": "^7.0.6",
     "socks-proxy-agent": "^8.0.5",
     "undici": "^6.21.3",
