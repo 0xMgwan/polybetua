@@ -219,6 +219,12 @@ export class TradingEngine {
         orderType: "GTC"
       });
 
+      // Only record position if order was actually placed successfully
+      if (!order || !order.orderID) {
+        console.log("[Trading] Order failed - no orderID returned, not recording position");
+        return { success: false, reason: "Order failed - no orderID returned" };
+      }
+
       this.lastTradeTime = Date.now();
       this.hourlyTrades.push(Date.now());
       
@@ -235,7 +241,7 @@ export class TradingEngine {
         price,
         size,
         cost: maxCost,
-        orderId: order?.orderID,
+        orderId: order.orderID,
         marketSlug: marketData.marketSlug
       };
 
@@ -244,7 +250,7 @@ export class TradingEngine {
 
       // Track position for P&L
       this.positionTracker.addPosition({
-        orderId: order?.orderID,
+        orderId: order.orderID,
         direction: signal.direction,
         outcome: signal.targetOutcome,
         price,
