@@ -48,7 +48,7 @@ export const CONFIG = {
     maxCapitalRisk: Number(process.env.TRADING_MAX_CAPITAL_RISK) || 0.06,  // SURVIVAL: Max 6% of capital per trade
     minRemainingBalance: Number(process.env.TRADING_MIN_BALANCE) || 35,  // SURVIVAL: Keep $35 reserve minimum
     maxDailyLoss: Number(process.env.TRADING_MAX_DAILY_LOSS) || 8,  // SURVIVAL: Stop after $8 daily loss
-    maxTradesPerHour: Number(process.env.TRADING_MAX_TRADES_PER_HOUR) || 2,  // SURVIVAL: Max 2 trades/hour
+    maxTradesPerHour: Number(process.env.TRADING_MAX_TRADES_PER_HOUR) || 4,  // SURVIVAL: Max 4 trades/hour (one per 15min candle)
     maxTokenPrice: Number(process.env.TRADING_MAX_TOKEN_PRICE) || 0.85  // SURVIVAL: Only buy under $0.85
   }
 };
