@@ -101,6 +101,18 @@ export class PositionTracker {
 
         const emoji = won ? "✅" : "❌";
         console.log(`[Tracker] ${emoji} Position resolved: ${pos.direction} ${pos.outcome} | P&L: $${pos.pnl.toFixed(2)} | Total P&L: $${this.totalPnl.toFixed(2)}`);
+        
+        // Detailed loss analysis for learning
+        if (!won) {
+          console.log(`[Loss Analysis] ────────────────────────────`);
+          console.log(`[Loss Analysis] Market: ${pos.marketSlug}`);
+          console.log(`[Loss Analysis] Direction: ${pos.direction} | Outcome bet: ${pos.outcome}`);
+          console.log(`[Loss Analysis] Entry: $${pos.entryPrice?.toFixed(3) || 'N/A'} | Shares: ${pos.size} | Cost: $${pos.cost?.toFixed(2) || 'N/A'}`);
+          console.log(`[Loss Analysis] Confidence: ${pos.confidence?.toFixed(1) || 'N/A'}% | Edge: ${pos.edge ? (pos.edge * 100).toFixed(1) : 'N/A'}%`);
+          console.log(`[Loss Analysis] PriceToBeat: $${pos.priceToBeat?.toFixed(2) || 'N/A'} | Resolved BTC: $${currentPrice?.toFixed(2) || 'N/A'}`);
+          console.log(`[Loss Analysis] Result: BTC moved ${pos.outcome === 'Up' ? 'DOWN' : 'UP'} — prediction was WRONG`);
+          console.log(`[Loss Analysis] ────────────────────────────`);
+        }
       }
     }
 

@@ -43,12 +43,12 @@ export const CONFIG = {
     orderSize: Number(process.env.TRADING_ORDER_SIZE) || 5,  // $5 per trade for better profits
     maxPositionSize: Number(process.env.TRADING_MAX_POSITION_SIZE) || 3,  // ONE trade per market
     minEdge: Number(process.env.TRADING_MIN_EDGE) || 0.08,  // 8% edge minimum (slightly relaxed)
-    cooldownMs: Number(process.env.TRADING_COOLDOWN_MS) || 900000,  // 15 min cooldown (one per candle)
+    cooldownMs: Number(process.env.TRADING_COOLDOWN_MS) || 60000,  // 60s cooldown (prevents duplicate orders, allows next market immediately)
     dryRun: (process.env.TRADING_DRY_RUN || "false").toLowerCase() === "true",
     maxCapitalRisk: Number(process.env.TRADING_MAX_CAPITAL_RISK) || 0.06,  // Max 6% of capital per trade
     minRemainingBalance: Number(process.env.TRADING_MIN_BALANCE) || 35,  // Keep $35 reserve minimum
     maxDailyLoss: Number(process.env.TRADING_MAX_DAILY_LOSS) || 8,  // Stop after $8 daily loss
     maxTradesPerHour: Number(process.env.TRADING_MAX_TRADES_PER_HOUR) || 4,  // Max 4 trades/hour (one per 15min candle)
-    maxTokenPrice: Number(process.env.TRADING_MAX_TOKEN_PRICE) || 0.60  // BALANCED: Buy under 60¢ for good risk/reward
+    maxTokenPrice: Number(process.env.TRADING_MAX_TOKEN_PRICE) || 0.65  // BALANCED: Buy under 65¢ for good risk/reward
   }
 };
