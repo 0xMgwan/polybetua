@@ -166,9 +166,10 @@ export class TradingService {
       let retries = 0;
       const maxRetries = 3;
       
-      while (retries < maxRetries && !order) {
+      while (retries < maxRetries) {
         try {
           order = await this.client.postOrder(signedOrder, orderType);
+          break; // Success - exit retry loop
         } catch (error) {
           retries++;
           console.log(`[Trading] ⚠ Proxy timeout (attempt ${retries}/${maxRetries}): ${error.message}`);
@@ -178,9 +179,14 @@ export class TradingService {
             await new Promise(resolve => setTimeout(resolve, 2000));
           } else {
             console.log(`[Trading] ✗ Failed after ${maxRetries} attempts`);
-            throw error;
+            throw new Error(`Proxy timeout after ${maxRetries} attempts: ${error.message}`);
           }
         }
+      }
+      
+      // Double-check we got an order
+      if (!order) {
+        throw new Error("Failed to place order: No response after retries");
       }
 
       // Safe log - avoid circular structure errors from proxy agents
