@@ -68,15 +68,15 @@ export class TradingEngine {
       return { shouldTrade: false, reason: "Missing prediction or market data" };
     }
 
-    // RULE #4: Trade early in candle for best entry - minutes 1-14 of 15min candle
+    // RULE #4: Trade in sweet spot - minutes 3-12 of candle (need data, avoid late entries)
     if (marketData.marketEndTime) {
       const msLeft = marketData.marketEndTime - now;
       const minLeft = msLeft / 60000;
-      if (minLeft > 14.5) {
-        return { shouldTrade: false, reason: `Too early in candle (${minLeft.toFixed(0)}min left, wait for data)` };
+      if (minLeft > 12) {
+        return { shouldTrade: false, reason: `Too early in candle (${minLeft.toFixed(0)}min left, need 3+ min of data)` };
       }
-      if (minLeft < 1) {
-        return { shouldTrade: false, reason: `Too late in candle (${minLeft.toFixed(0)}min left, need 1+ min)` };
+      if (minLeft < 3) {
+        return { shouldTrade: false, reason: `Too late in candle (${minLeft.toFixed(0)}min left, need 3+ min)` };
       }
     }
 
@@ -141,8 +141,8 @@ export class TradingEngine {
 
       if (indicators.rsi !== undefined && indicators.rsi !== null) {
         totalIndicators++;
-        if (indicators.rsi > 55) bullishCount++;
-        else if (indicators.rsi < 45) bearishCount++;
+        if (indicators.rsi > 52) bullishCount++;
+        else if (indicators.rsi < 48) bearishCount++;
       }
 
       if (indicators.macdHist !== undefined && indicators.macdHist !== null) {
@@ -157,7 +157,7 @@ export class TradingEngine {
         else if (indicators.heikenColor === "red") bearishCount++;
       }
 
-      const requiredConsensus = 3;  // BALANCED: Need 3/5 indicators agreeing (trades consistently with quality)
+      const requiredConsensus = 4;  // STRICT: Need 4/5 indicators agreeing for high win rate
       const agreeingCount = direction === "LONG" ? bullishCount : bearishCount;
       
       if (totalIndicators >= 4 && agreeingCount < requiredConsensus) {
@@ -165,6 +165,20 @@ export class TradingEngine {
           shouldTrade: false,
           reason: `Weak consensus (${agreeingCount}/${totalIndicators} agree on ${direction}, need ${requiredConsensus})`
         };
+      }
+
+      // MOMENTUM CONFIRMATION: Price must be moving in our direction
+      if (indicators.priceVsVwap !== undefined && indicators.vwapSlope !== undefined) {
+        const priceConfirms = direction === "LONG" 
+          ? (indicators.priceVsVwap > 0 && indicators.vwapSlope > 0)
+          : (indicators.priceVsVwap < 0 && indicators.vwapSlope < 0);
+        
+        if (!priceConfirms) {
+          return {
+            shouldTrade: false,
+            reason: `No momentum confirmation (price/VWAP not aligned with ${direction})`
+          };
+        }
       }
     }
 
