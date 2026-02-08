@@ -68,15 +68,15 @@ export class TradingEngine {
       return { shouldTrade: false, reason: "Missing prediction or market data" };
     }
 
-    // RULE #4: Trade in sweet spot - minutes 2-13 of candle (need some data, avoid very late entries)
+    // RULE #4: Trade early for best prices - enter from minute 1, stop 1 min before end
     if (marketData.marketEndTime) {
       const msLeft = marketData.marketEndTime - now;
       const minLeft = msLeft / 60000;
-      if (minLeft > 13) {
-        return { shouldTrade: false, reason: `Too early in candle (${minLeft.toFixed(0)}min left, need 2+ min of data)` };
+      if (minLeft > 14) {
+        return { shouldTrade: false, reason: `Too early in candle (${minLeft.toFixed(0)}min left, waiting for candle start)` };
       }
-      if (minLeft < 2) {
-        return { shouldTrade: false, reason: `Too late in candle (${minLeft.toFixed(0)}min left, need 2+ min)` };
+      if (minLeft < 1) {
+        return { shouldTrade: false, reason: `Too late in candle (${minLeft.toFixed(0)}min left)` };
       }
     }
 
