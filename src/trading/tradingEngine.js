@@ -235,17 +235,13 @@ export class TradingEngine {
         orderType: "GTC"
       });
 
-      // Only record position if order was actually FILLED (not just "live"/pending)
+      // Only record position if order was accepted by Polymarket (has orderID)
       if (!order || !order.orderID) {
         console.log("[Trading] Order failed - no orderID returned, not recording position");
         return { success: false, reason: "Order failed - no orderID returned" };
       }
       
-      // Check if order is actually filled
-      if (order.status !== "filled") {
-        console.log(`[Trading] ⚠ Order status is '${order.status}' (not filled yet), not recording position yet`);
-        return { success: false, reason: `Order status is '${order.status}', waiting for fill` };
-      }
+      console.log(`[Trading] Order accepted with status '${order.status}' - recording position`);
 
       this.lastTradeTime = Date.now();
       this.hourlyTrades.push(Date.now());
