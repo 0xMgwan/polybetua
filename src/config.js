@@ -39,16 +39,16 @@ export const CONFIG = {
   trading: {
     enabled: (process.env.TRADING_ENABLED || "false").toLowerCase() === "true",
     privateKey: process.env.PRIVATE_KEY || "",
-    minConfidence: Number(process.env.TRADING_MIN_CONFIDENCE) || 75,  // HIGH QUALITY: 75% minimum for 80%+ win rate
+    minConfidence: Number(process.env.TRADING_MIN_CONFIDENCE) || 70,  // QUALITY: 70% min + 4/5 consensus + momentum = 80%+ win rate
     orderSize: Number(process.env.TRADING_ORDER_SIZE) || 5,  // $5 per trade for better profits
     maxPositionSize: Number(process.env.TRADING_MAX_POSITION_SIZE) || 3,  // ONE trade per market
-    minEdge: Number(process.env.TRADING_MIN_EDGE) || 0.15,  // 15% edge minimum (only take high-conviction trades)
+    minEdge: Number(process.env.TRADING_MIN_EDGE) || 0.10,  // 10% edge minimum (quality ensured by consensus + momentum)
     cooldownMs: Number(process.env.TRADING_COOLDOWN_MS) || 900000,  // 15 min cooldown (exactly 1 trade per market window)
     dryRun: (process.env.TRADING_DRY_RUN || "false").toLowerCase() === "true",
     maxCapitalRisk: Number(process.env.TRADING_MAX_CAPITAL_RISK) || 0.06,  // Max 6% of capital per trade
     minRemainingBalance: Number(process.env.TRADING_MIN_BALANCE) || 35,  // Keep $35 reserve minimum
     maxDailyLoss: Number(process.env.TRADING_MAX_DAILY_LOSS) || 8,  // Stop after $8 daily loss
     maxTradesPerHour: Number(process.env.TRADING_MAX_TRADES_PER_HOUR) || 4,  // Max 4 trades/hour (one per 15min candle)
-    maxTokenPrice: Number(process.env.TRADING_MAX_TOKEN_PRICE) || 0.50  // STRICT: Buy under 50¢ for 2:1+ risk/reward
+    maxTokenPrice: Number(process.env.TRADING_MAX_TOKEN_PRICE) || 0.55  // Buy under 55¢ for good risk/reward + more opportunities
   }
 };

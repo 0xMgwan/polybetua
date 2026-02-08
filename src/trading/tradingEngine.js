@@ -68,15 +68,15 @@ export class TradingEngine {
       return { shouldTrade: false, reason: "Missing prediction or market data" };
     }
 
-    // RULE #4: Trade in sweet spot - minutes 3-12 of candle (need data, avoid late entries)
+    // RULE #4: Trade in sweet spot - minutes 2-13 of candle (need some data, avoid very late entries)
     if (marketData.marketEndTime) {
       const msLeft = marketData.marketEndTime - now;
       const minLeft = msLeft / 60000;
-      if (minLeft > 12) {
-        return { shouldTrade: false, reason: `Too early in candle (${minLeft.toFixed(0)}min left, need 3+ min of data)` };
+      if (minLeft > 13) {
+        return { shouldTrade: false, reason: `Too early in candle (${minLeft.toFixed(0)}min left, need 2+ min of data)` };
       }
-      if (minLeft < 3) {
-        return { shouldTrade: false, reason: `Too late in candle (${minLeft.toFixed(0)}min left, need 3+ min)` };
+      if (minLeft < 2) {
+        return { shouldTrade: false, reason: `Too late in candle (${minLeft.toFixed(0)}min left, need 2+ min)` };
       }
     }
 
@@ -157,7 +157,7 @@ export class TradingEngine {
         else if (indicators.heikenColor === "red") bearishCount++;
       }
 
-      const requiredConsensus = 4;  // STRICT: Need 4/5 indicators agreeing for high win rate
+      const requiredConsensus = 3;  // 3/5 indicators + momentum confirmation = quality trades every 15min
       const agreeingCount = direction === "LONG" ? bullishCount : bearishCount;
       
       if (totalIndicators >= 4 && agreeingCount < requiredConsensus) {
