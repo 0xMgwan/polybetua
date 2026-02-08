@@ -148,7 +148,7 @@ export class TradingEngine {
         else if (indicators.heikenColor === "red") bearishCount++;
       }
 
-      const requiredConsensus = 2;  // Need 2/5 indicators agreeing (relaxed for Chainlink fallback)
+      const requiredConsensus = 3;  // BALANCED: Need 3/5 indicators agreeing (trades consistently with quality)
       const agreeingCount = direction === "LONG" ? bullishCount : bearishCount;
       
       if (totalIndicators >= 4 && agreeingCount < requiredConsensus) {
