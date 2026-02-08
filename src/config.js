@@ -43,7 +43,7 @@ export const CONFIG = {
     orderSize: Number(process.env.TRADING_ORDER_SIZE) || 5,  // $5 per trade for better profits
     maxPositionSize: Number(process.env.TRADING_MAX_POSITION_SIZE) || 3,  // ONE trade per market
     minEdge: Number(process.env.TRADING_MIN_EDGE) || 0.08,  // 8% edge minimum (slightly relaxed)
-    cooldownMs: Number(process.env.TRADING_COOLDOWN_MS) || 300000,  // 5 min cooldown (prevents multiple trades in same market)
+    cooldownMs: Number(process.env.TRADING_COOLDOWN_MS) || 900000,  // 15 min cooldown (exactly 1 trade per market window)
     dryRun: (process.env.TRADING_DRY_RUN || "false").toLowerCase() === "true",
     maxCapitalRisk: Number(process.env.TRADING_MAX_CAPITAL_RISK) || 0.06,  // Max 6% of capital per trade
     minRemainingBalance: Number(process.env.TRADING_MIN_BALANCE) || 35,  // Keep $35 reserve minimum
