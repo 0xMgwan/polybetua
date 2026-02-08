@@ -193,7 +193,18 @@ export class TradingService {
       try {
         const safeOrder = order ? { orderID: order.orderID, status: order.status, ...( order.errorMsg ? { errorMsg: order.errorMsg } : {}) } : order;
         console.log(`[Trading] Order response:`, JSON.stringify(safeOrder));
-      } catch { console.log(`[Trading] Order response: [object]`); }
+        
+        // If no orderID, log more details for debugging
+        if (!order || !order.orderID) {
+          console.log(`[Trading] ⚠ Debug - Full order object:`, JSON.stringify(order, null, 2));
+          console.log(`[Trading] ⚠ Debug - Order keys:`, order ? Object.keys(order) : 'null');
+        }
+      } catch { 
+        console.log(`[Trading] Order response: [object]`);
+        if (!order || !order.orderID) {
+          console.log(`[Trading] ⚠ Debug - Order is null or missing orderID`);
+        }
+      }
 
       if (order && order.orderID) {
         this.activeOrders.set(order.orderID, {
