@@ -54,6 +54,16 @@ export class TradingEngine {
       };
     }
 
+    // CIRCUIT BREAKER: Stop if total exposure gets too high
+    const totalExposure = this.positionTracker.openPositions.reduce((sum, pos) => sum + pos.cost, 0);
+    const maxExposure = 20; // $20 max total exposure
+    if (totalExposure >= maxExposure) {
+      return { 
+        shouldTrade: false, 
+        reason: `Circuit breaker: Total exposure $${totalExposure.toFixed(2)} >= $${maxExposure}` 
+      };
+    }
+
     if (!prediction || !marketData) {
       return { shouldTrade: false, reason: "Missing prediction or market data" };
     }
@@ -193,7 +203,7 @@ export class TradingEngine {
       }
 
       const side = "BUY";
-      const price = Math.min(0.99, signal.marketPrice + 0.01);
+      const price = Math.min(0.95, signal.marketPrice + 0.003);  // Closer to market price for better fill rates
       
       // SURVIVAL: Fixed small size per trade
       // orderSize is in dollars, calculate shares based on price
