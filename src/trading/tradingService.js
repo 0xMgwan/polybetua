@@ -161,8 +161,27 @@ export class TradingService {
       const signedOrder = await this.client.createOrder(orderArgs, options);
       console.log(`[Trading] Order signed, posting...`);
       
-      // Step 2: Post order to CLOB
-      const order = await this.client.postOrder(signedOrder, orderType);
+      // Step 2: Post order to CLOB with retry for proxy timeouts
+      let order = null;
+      let retries = 0;
+      const maxRetries = 3;
+      
+      while (retries < maxRetries && !order) {
+        try {
+          order = await this.client.postOrder(signedOrder, orderType);
+        } catch (error) {
+          retries++;
+          console.log(`[Trading] ⚠ Proxy timeout (attempt ${retries}/${maxRetries}): ${error.message}`);
+          
+          if (retries < maxRetries) {
+            console.log(`[Trading] Retrying in 2 seconds...`);
+            await new Promise(resolve => setTimeout(resolve, 2000));
+          } else {
+            console.log(`[Trading] ✗ Failed after ${maxRetries} attempts`);
+            throw error;
+          }
+        }
+      }
 
       // Safe log - avoid circular structure errors from proxy agents
       try {
