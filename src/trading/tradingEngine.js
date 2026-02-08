@@ -221,10 +221,16 @@ export class TradingEngine {
         orderType: "GTC"
       });
 
-      // Only record position if order was actually placed successfully
+      // Only record position if order was actually FILLED (not just "live"/pending)
       if (!order || !order.orderID) {
         console.log("[Trading] Order failed - no orderID returned, not recording position");
         return { success: false, reason: "Order failed - no orderID returned" };
+      }
+      
+      // Check if order is actually filled
+      if (order.status !== "filled") {
+        console.log(`[Trading] ⚠ Order status is '${order.status}' (not filled yet), not recording position yet`);
+        return { success: false, reason: `Order status is '${order.status}', waiting for fill` };
       }
 
       this.lastTradeTime = Date.now();
