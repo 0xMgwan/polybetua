@@ -815,8 +815,8 @@ async function main() {
       if (tradingStatus?.enabled) {
         const stats = getTradingStats();
         const statusColor = tradingStatus.dryRun ? ANSI.yellow : ANSI.green;
-        const statusText = tradingStatus.dryRun ? "DRY RUN" : "SURVIVAL MODE";
-        tradingLines.push(kv("TRADING:", `${statusColor}${statusText}${ANSI.reset} ${ANSI.dim}($3 max/trade)${ANSI.reset}`));
+        const statusText = tradingStatus.dryRun ? "DRY RUN" : "BALANCED MODE";
+        tradingLines.push(kv("TRADING:", `${statusColor}${statusText}${ANSI.reset} ${ANSI.dim}($5 max/trade)${ANSI.reset}`));
         
         if (stats) {
           // P&L Display
