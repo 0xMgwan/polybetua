@@ -32,7 +32,7 @@ import { scoreDirection, applyTimeAwareness } from "./engines/probability.js";
 import { computeEdge, decide } from "./engines/edge.js";
 import { appendCsvRow, formatNumber, formatPct, getCandleWindowTiming, sleep } from "./utils.js";
 import { startBinanceTradeStream } from "./data/binanceWs.js";
-import { initializeTrading, evaluateAndTrade, getTradingStats, checkResolutions, cleanupStalePositions } from "./trading/index.js";
+import { initializeTrading, evaluateAndTrade, getTradingStats, checkResolutions, checkStopLoss, cleanupStalePositions } from "./trading/index.js";
 import fs from "node:fs";
 import path from "node:path";
 import readline from "node:readline";
@@ -688,6 +688,12 @@ async function main() {
         const ptb = priceToBeatState.slug === marketSlug ? priceToBeatState.value : null;
         checkResolutions(currentPrice, ptb);
         cleanupStalePositions();
+        
+        // Check for stop-loss triggers (20% loss)
+        const stopLossAlerts = checkStopLoss({ upPrice: marketUp, downPrice: marketDown });
+        if (stopLossAlerts.length > 0) {
+          console.log(`[WARNING] ${stopLossAlerts.length} position(s) triggering stop-loss!`);
+        }
 
         const prediction = {
           longPct: pLong ? pLong * 100 : 0,

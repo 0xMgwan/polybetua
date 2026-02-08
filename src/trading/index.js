@@ -123,6 +123,11 @@ export function checkResolutions(currentPrice, priceToBeat) {
   return tradingEngine.checkResolutions(currentPrice, priceToBeat);
 }
 
+export function checkStopLoss(currentMarketPrices) {
+  if (!tradingEngine) return [];
+  return tradingEngine.checkStopLoss(currentMarketPrices);
+}
+
 export function cleanupStalePositions() {
   if (!tradingEngine) return;
   tradingEngine.cleanupStalePositions();

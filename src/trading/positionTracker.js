@@ -138,6 +138,40 @@ export class PositionTracker {
     this._saveState();
   }
 
+  // Check if any open positions should be stopped out (20% loss)
+  checkStopLoss(currentMarketPrices) {
+    const STOP_LOSS_THRESHOLD = 0.20; // 20% loss triggers stop
+    const stoppedOut = [];
+
+    for (const pos of this.openPositions) {
+      // Get current market price for this position's outcome
+      const currentPrice = pos.outcome === "Up" 
+        ? currentMarketPrices?.upPrice 
+        : currentMarketPrices?.downPrice;
+      
+      if (!currentPrice || currentPrice <= 0) continue;
+
+      // Calculate unrealized loss
+      const currentValue = currentPrice * pos.size;
+      const unrealizedPnl = currentValue - pos.cost;
+      const lossPercent = unrealizedPnl / pos.cost;
+
+      // If we're down 20% or more, flag for stop-loss
+      if (lossPercent <= -STOP_LOSS_THRESHOLD) {
+        console.log(`[Stop-Loss] Position down ${(lossPercent * 100).toFixed(1)}% | ${pos.outcome} @ $${pos.entryPrice.toFixed(3)} → $${currentPrice.toFixed(3)}`);
+        console.log(`[Stop-Loss] Would sell now to cut losses (current value: $${currentValue.toFixed(2)} vs cost: $${pos.cost.toFixed(2)})`);
+        stoppedOut.push({
+          position: pos,
+          currentPrice,
+          lossPercent,
+          unrealizedPnl
+        });
+      }
+    }
+
+    return stoppedOut;
+  }
+
   getStats() {
     const totalTrades = this.wins + this.losses;
     const winRate = totalTrades > 0 ? (this.wins / totalTrades * 100) : 0;

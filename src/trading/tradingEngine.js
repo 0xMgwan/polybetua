@@ -286,6 +286,11 @@ export class TradingEngine {
     return this.positionTracker.checkResolutions(currentPrice, priceToBeat);
   }
 
+  // Check if any positions should be stopped out (20% loss)
+  checkStopLoss(currentMarketPrices) {
+    return this.positionTracker.checkStopLoss(currentMarketPrices);
+  }
+
   // Cleanup stale positions
   cleanupStalePositions() {
     this.positionTracker.cleanupStalePositions();

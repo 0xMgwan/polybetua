@@ -39,16 +39,16 @@ export const CONFIG = {
   trading: {
     enabled: (process.env.TRADING_ENABLED || "false").toLowerCase() === "true",
     privateKey: process.env.PRIVATE_KEY || "",
-    minConfidence: Number(process.env.TRADING_MIN_CONFIDENCE) || 60,  // SURVIVAL: 60% minimum
-    orderSize: Number(process.env.TRADING_ORDER_SIZE) || 3,  // SURVIVAL: $3 max per trade (6% of $50)
-    maxPositionSize: Number(process.env.TRADING_MAX_POSITION_SIZE) || 3,  // SURVIVAL: ONE trade per market
-    minEdge: Number(process.env.TRADING_MIN_EDGE) || 0.10,  // SURVIVAL: 10% edge minimum (works with Chainlink fallback)
-    cooldownMs: Number(process.env.TRADING_COOLDOWN_MS) || 900000,  // SURVIVAL: 15 min cooldown (1 per candle)
+    minConfidence: Number(process.env.TRADING_MIN_CONFIDENCE) || 70,  // REFINED: 70% minimum for higher quality signals
+    orderSize: Number(process.env.TRADING_ORDER_SIZE) || 5,  // REFINED: $5 minimum bet for better profits
+    maxPositionSize: Number(process.env.TRADING_MAX_POSITION_SIZE) || 3,  // ONE trade per market
+    minEdge: Number(process.env.TRADING_MIN_EDGE) || 0.10,  // 10% edge minimum
+    cooldownMs: Number(process.env.TRADING_COOLDOWN_MS) || 900000,  // 15 min cooldown
     dryRun: (process.env.TRADING_DRY_RUN || "false").toLowerCase() === "true",
-    maxCapitalRisk: Number(process.env.TRADING_MAX_CAPITAL_RISK) || 0.06,  // SURVIVAL: Max 6% of capital per trade
-    minRemainingBalance: Number(process.env.TRADING_MIN_BALANCE) || 35,  // SURVIVAL: Keep $35 reserve minimum
-    maxDailyLoss: Number(process.env.TRADING_MAX_DAILY_LOSS) || 8,  // SURVIVAL: Stop after $8 daily loss
-    maxTradesPerHour: Number(process.env.TRADING_MAX_TRADES_PER_HOUR) || 4,  // SURVIVAL: Max 4 trades/hour (one per 15min candle)
-    maxTokenPrice: Number(process.env.TRADING_MAX_TOKEN_PRICE) || 0.85  // SURVIVAL: Only buy under $0.85
+    maxCapitalRisk: Number(process.env.TRADING_MAX_CAPITAL_RISK) || 0.06,  // Max 6% of capital per trade
+    minRemainingBalance: Number(process.env.TRADING_MIN_BALANCE) || 35,  // Keep $35 reserve minimum
+    maxDailyLoss: Number(process.env.TRADING_MAX_DAILY_LOSS) || 8,  // Stop after $8 daily loss
+    maxTradesPerHour: Number(process.env.TRADING_MAX_TRADES_PER_HOUR) || 4,  // REFINED: Max 4 trades/hour (quality over quantity)
+    maxTokenPrice: Number(process.env.TRADING_MAX_TOKEN_PRICE) || 0.50  // REFINED: Only buy under 50¢ for better risk/reward
   }
 };
