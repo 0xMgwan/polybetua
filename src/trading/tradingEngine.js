@@ -92,10 +92,10 @@ export class TradingEngine {
       };
     }
 
-    const direction = longConfidence > shortConfidence ? "LONG" : "SHORT";
-    const targetOutcome = direction === "LONG" ? "Up" : "Down";
+    let direction = longConfidence > shortConfidence ? "LONG" : "SHORT";
+    let targetOutcome = direction === "LONG" ? "Up" : "Down";
     
-    const marketPrice = direction === "LONG" 
+    let marketPrice = direction === "LONG" 
       ? marketData.upPrice 
       : marketData.downPrice;
 
@@ -167,18 +167,21 @@ export class TradingEngine {
         };
       }
 
-      // MOMENTUM CONFIRMATION: Price must be moving in our direction
-      if (indicators.priceVsVwap !== undefined && indicators.vwapSlope !== undefined) {
-        const priceConfirms = direction === "LONG" 
-          ? (indicators.priceVsVwap > 0 && indicators.vwapSlope > 0)
-          : (indicators.priceVsVwap < 0 && indicators.vwapSlope < 0);
-        
-        if (!priceConfirms) {
-          return {
-            shouldTrade: false,
-            reason: `No momentum confirmation (price/VWAP not aligned with ${direction})`
-          };
-        }
+      // TREND OVERRIDE: If indicators strongly disagree with model, follow the indicators
+      const macdBullish = indicators.macdHist !== undefined && indicators.macdHist > 0;
+      const macdBearish = indicators.macdHist !== undefined && indicators.macdHist < 0;
+      
+      if (direction === "SHORT" && bullishCount > bearishCount && macdBullish) {
+        console.log(`[Trading] ⚡ TREND OVERRIDE: Model says SHORT but ${bullishCount} bullish indicators + MACD bullish → flipping to LONG`);
+        direction = "LONG";
+        targetOutcome = "Up";
+        marketPrice = marketData.upPrice;
+      }
+      if (direction === "LONG" && bearishCount > bullishCount && macdBearish) {
+        console.log(`[Trading] ⚡ TREND OVERRIDE: Model says LONG but ${bearishCount} bearish indicators + MACD bearish → flipping to SHORT`);
+        direction = "SHORT";
+        targetOutcome = "Down";
+        marketPrice = marketData.downPrice;
       }
     }
 
