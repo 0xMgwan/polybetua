@@ -64,12 +64,6 @@ export class TradingEngine {
       };
     }
 
-    // LOSS-STREAK PROTECTION: Pause after 3 consecutive losses
-    const streakCheck = this.positionTracker.shouldStopTrading();
-    if (streakCheck.stop) {
-      return { shouldTrade: false, reason: `Loss protection: ${streakCheck.reason}` };
-    }
-
     if (!prediction || !marketData) {
       return { shouldTrade: false, reason: "Missing prediction or market data" };
     }
