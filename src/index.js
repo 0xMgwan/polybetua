@@ -714,13 +714,18 @@ async function main() {
           priceToBeat: ptb
         };
 
-        // Pass indicator data for consensus check
+        // Pass indicator data for INDICATOR-FIRST direction decision
         const indicators = {
           priceVsVwap: (lastPrice && vwapNow) ? lastPrice - vwapNow : undefined,
           vwapSlope: vwapSlope,
           rsi: rsiNow,
           macdHist: macd?.hist ?? null,
-          heikenColor: consec.color ?? null
+          macdHistDelta: macd?.histDelta ?? null,
+          heikenColor: consec.color ?? null,
+          heikenCount: consec.count ?? 0,
+          delta1m: delta1m,
+          delta3m: delta3m,
+          lastPrice: lastPrice
         };
 
         tradeResult = await evaluateAndTrade(prediction, marketData, currentPrice, indicators, ptb);

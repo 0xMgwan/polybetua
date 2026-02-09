@@ -80,128 +80,173 @@ export class TradingEngine {
       }
     }
 
-    const longConfidence = prediction.longPct ?? 0;
-    const shortConfidence = prediction.shortPct ?? 0;
-    const maxConfidence = Math.max(longConfidence, shortConfidence);
+    // ═══════════════════════════════════════════════════════════════
+    // INDICATOR-FIRST STRATEGY: Indicators decide direction, not model
+    // The model confidence has proven unreliable (86% conf but wrong)
+    // Instead, we use a weighted scoring of real-time technical indicators
+    // ═══════════════════════════════════════════════════════════════
 
-    // SURVIVAL RULE #5: 80% minimum confidence
-    if (maxConfidence < this.config.minConfidence) {
-      return { 
-        shouldTrade: false, 
-        reason: `Confidence too low (${maxConfidence.toFixed(1)}% < ${this.config.minConfidence}%)` 
+    // Step 1: Score each indicator with weights
+    let bullScore = 0;
+    let bearScore = 0;
+    const signals = [];
+
+    // MACD Histogram (weight: 3) — strongest trend indicator
+    if (indicators.macdHist !== undefined && indicators.macdHist !== null) {
+      if (indicators.macdHist > 0) {
+        bullScore += 3;
+        signals.push(`MACD:BULL(+3)`);
+      } else if (indicators.macdHist < 0) {
+        bearScore += 3;
+        signals.push(`MACD:BEAR(+3)`);
+      }
+      // Bonus for expanding MACD (momentum accelerating)
+      if (indicators.macdHistDelta !== undefined && indicators.macdHistDelta !== null) {
+        if (indicators.macdHistDelta > 0 && indicators.macdHist > 0) {
+          bullScore += 1;
+          signals.push(`MACD-expand:BULL(+1)`);
+        } else if (indicators.macdHistDelta < 0 && indicators.macdHist < 0) {
+          bearScore += 1;
+          signals.push(`MACD-expand:BEAR(+1)`);
+        }
+      }
+    }
+
+    // Price vs VWAP (weight: 2) — price position relative to fair value
+    if (indicators.priceVsVwap !== undefined) {
+      if (indicators.priceVsVwap > 0) {
+        bullScore += 2;
+        signals.push(`PriceVsVWAP:BULL(+2)`);
+      } else if (indicators.priceVsVwap < 0) {
+        bearScore += 2;
+        signals.push(`PriceVsVWAP:BEAR(+2)`);
+      }
+    }
+
+    // VWAP Slope (weight: 2) — trend direction
+    if (indicators.vwapSlope !== undefined && indicators.vwapSlope !== null) {
+      if (indicators.vwapSlope > 0) {
+        bullScore += 2;
+        signals.push(`VWAPslope:BULL(+2)`);
+      } else if (indicators.vwapSlope < 0) {
+        bearScore += 2;
+        signals.push(`VWAPslope:BEAR(+2)`);
+      }
+    }
+
+    // Heiken Ashi (weight: 2, +1 bonus for consecutive candles)
+    if (indicators.heikenColor !== undefined && indicators.heikenColor !== null) {
+      if (indicators.heikenColor === "green") {
+        bullScore += 2;
+        signals.push(`Heiken:BULL(+2)`);
+        if (indicators.heikenCount >= 3) {
+          bullScore += 1;
+          signals.push(`Heiken-streak(${indicators.heikenCount}):BULL(+1)`);
+        }
+      } else if (indicators.heikenColor === "red") {
+        bearScore += 2;
+        signals.push(`Heiken:BEAR(+2)`);
+        if (indicators.heikenCount >= 3) {
+          bearScore += 1;
+          signals.push(`Heiken-streak(${indicators.heikenCount}):BEAR(+1)`);
+        }
+      }
+    }
+
+    // RSI (weight: 1) — momentum confirmation
+    if (indicators.rsi !== undefined && indicators.rsi !== null) {
+      if (indicators.rsi > 55) {
+        bullScore += 1;
+        signals.push(`RSI(${indicators.rsi.toFixed(0)}):BULL(+1)`);
+      } else if (indicators.rsi < 45) {
+        bearScore += 1;
+        signals.push(`RSI(${indicators.rsi.toFixed(0)}):BEAR(+1)`);
+      } else {
+        signals.push(`RSI(${indicators.rsi.toFixed(0)}):NEUTRAL`);
+      }
+    }
+
+    // BTC Price Delta 1m (weight: 1) — immediate momentum
+    if (indicators.delta1m !== undefined && indicators.delta1m !== null) {
+      if (indicators.delta1m > 0) {
+        bullScore += 1;
+        signals.push(`Δ1m(+$${indicators.delta1m.toFixed(0)}):BULL(+1)`);
+      } else if (indicators.delta1m < 0) {
+        bearScore += 1;
+        signals.push(`Δ1m(-$${Math.abs(indicators.delta1m).toFixed(0)}):BEAR(+1)`);
+      }
+    }
+
+    // BTC Price Delta 3m (weight: 1) — short-term trend
+    if (indicators.delta3m !== undefined && indicators.delta3m !== null) {
+      if (indicators.delta3m > 0) {
+        bullScore += 1;
+        signals.push(`Δ3m(+$${indicators.delta3m.toFixed(0)}):BULL(+1)`);
+      } else if (indicators.delta3m < 0) {
+        bearScore += 1;
+        signals.push(`Δ3m(-$${Math.abs(indicators.delta3m).toFixed(0)}):BEAR(+1)`);
+      }
+    }
+
+    const totalScore = bullScore + bearScore;
+    const scoreDiff = Math.abs(bullScore - bearScore);
+
+    // Step 2: Log comprehensive indicator analysis
+    console.log(`[Strategy] ══════════════════════════════════════`);
+    console.log(`[Strategy] BULL score: ${bullScore} | BEAR score: ${bearScore} | Diff: ${scoreDiff}`);
+    console.log(`[Strategy] Signals: ${signals.join(', ')}`);
+
+    // Step 3: Require minimum score difference for clear signal
+    const minScoreDiff = 3; // Need at least 3-point advantage
+    if (scoreDiff < minScoreDiff) {
+      console.log(`[Strategy] ⚠ Signal too weak (diff ${scoreDiff} < ${minScoreDiff}) — SKIP`);
+      return {
+        shouldTrade: false,
+        reason: `Mixed signals (BULL:${bullScore} vs BEAR:${bearScore}, need ${minScoreDiff}+ diff)`
       };
     }
 
-    let direction = longConfidence > shortConfidence ? "LONG" : "SHORT";
+    // Step 4: Direction decided by indicators, NOT model
+    let direction = bullScore > bearScore ? "LONG" : "SHORT";
     let targetOutcome = direction === "LONG" ? "Up" : "Down";
-    
-    let marketPrice = direction === "LONG" 
-      ? marketData.upPrice 
-      : marketData.downPrice;
+    let marketPrice = direction === "LONG" ? marketData.upPrice : marketData.downPrice;
+
+    console.log(`[Strategy] ✅ Direction: ${direction} (score: ${direction === "LONG" ? bullScore : bearScore})`);
 
     if (!marketPrice || marketPrice <= 0 || marketPrice >= 1) {
       return { shouldTrade: false, reason: "Invalid market price" };
     }
 
-    // SURVIVAL RULE #6: Only buy tokens under price cap for better risk/reward
-    const maxPrice = this.config.maxTokenPrice || 0.60;
+    // Step 5: Price cap for risk/reward
+    const maxPrice = this.config.maxTokenPrice || 0.55;
     if (marketPrice > maxPrice) {
       return { shouldTrade: false, reason: `Price too high ($${marketPrice.toFixed(2)} > $${maxPrice.toFixed(2)})` };
     }
 
-    const impliedProb = marketPrice;
-    const modelProb = maxConfidence / 100;
-    const edge = modelProb - impliedProb;
+    // Step 6: Calculate edge based on indicator strength (not model)
+    const indicatorConfidence = (Math.max(bullScore, bearScore) / totalScore) * 100;
+    const edge = (indicatorConfidence / 100) - marketPrice;
 
-    // SURVIVAL RULE #7: 20% minimum edge
-    if (edge < this.config.minEdge) {
-      return { 
-        shouldTrade: false, 
-        reason: `Edge too small (${(edge * 100).toFixed(1)}% < ${(this.config.minEdge * 100).toFixed(1)}%)` 
-      };
-    }
-
-    // SURVIVAL RULE #8: STRICT indicator consensus - require 4 out of 5 to agree
-    if (indicators && Object.keys(indicators).length > 0) {
-      let bullishCount = 0;
-      let bearishCount = 0;
-      let totalIndicators = 0;
-
-      if (indicators.priceVsVwap !== undefined) {
-        totalIndicators++;
-        if (indicators.priceVsVwap > 0) bullishCount++;
-        else if (indicators.priceVsVwap < 0) bearishCount++;
-      }
-
-      if (indicators.vwapSlope !== undefined && indicators.vwapSlope !== null) {
-        totalIndicators++;
-        if (indicators.vwapSlope > 0) bullishCount++;
-        else if (indicators.vwapSlope < 0) bearishCount++;
-      }
-
-      if (indicators.rsi !== undefined && indicators.rsi !== null) {
-        totalIndicators++;
-        if (indicators.rsi > 52) bullishCount++;
-        else if (indicators.rsi < 48) bearishCount++;
-      }
-
-      if (indicators.macdHist !== undefined && indicators.macdHist !== null) {
-        totalIndicators++;
-        if (indicators.macdHist > 0) bullishCount++;
-        else if (indicators.macdHist < 0) bearishCount++;
-      }
-
-      if (indicators.heikenColor !== undefined && indicators.heikenColor !== null) {
-        totalIndicators++;
-        if (indicators.heikenColor === "green") bullishCount++;
-        else if (indicators.heikenColor === "red") bearishCount++;
-      }
-
-      const requiredConsensus = 3;  // 3/5 indicators + momentum confirmation = quality trades every 15min
-      const agreeingCount = direction === "LONG" ? bullishCount : bearishCount;
-      
-      if (totalIndicators >= 4 && agreeingCount < requiredConsensus) {
-        return {
-          shouldTrade: false,
-          reason: `Weak consensus (${agreeingCount}/${totalIndicators} agree on ${direction}, need ${requiredConsensus})`
-        };
-      }
-
-      // TREND OVERRIDE: If indicators strongly disagree with model, follow the indicators
-      const macdBullish = indicators.macdHist !== undefined && indicators.macdHist > 0;
-      const macdBearish = indicators.macdHist !== undefined && indicators.macdHist < 0;
-      
-      if (direction === "SHORT" && bullishCount > bearishCount && macdBullish) {
-        console.log(`[Trading] ⚡ TREND OVERRIDE: Model says SHORT but ${bullishCount} bullish indicators + MACD bullish → flipping to LONG`);
-        direction = "LONG";
-        targetOutcome = "Up";
-        marketPrice = marketData.upPrice;
-      }
-      if (direction === "LONG" && bearishCount > bullishCount && macdBearish) {
-        console.log(`[Trading] ⚡ TREND OVERRIDE: Model says LONG but ${bearishCount} bearish indicators + MACD bearish → flipping to SHORT`);
-        direction = "SHORT";
-        targetOutcome = "Down";
-        marketPrice = marketData.downPrice;
-      }
-    }
-
-    // SURVIVAL RULE #9: Don't trade if spread is too wide (>4%)
-    if (marketData.spread !== undefined && marketData.spread !== null && marketData.spread > 0.04) {
+    // Step 7: Don't trade if spread is too wide (>5%)
+    if (marketData.spread !== undefined && marketData.spread !== null && marketData.spread > 0.05) {
       return {
         shouldTrade: false,
-        reason: `Spread too wide (${(marketData.spread * 100).toFixed(1)}% > 4%)`
+        reason: `Spread too wide (${(marketData.spread * 100).toFixed(1)}% > 5%)`
       };
     }
+
+    console.log(`[Strategy] Entry: ${direction} ${targetOutcome} @ $${marketPrice.toFixed(3)} | Indicator conf: ${indicatorConfidence.toFixed(0)}%`);
+    console.log(`[Strategy] ══════════════════════════════════════`);
 
     return {
       shouldTrade: true,
       direction,
       targetOutcome,
-      confidence: maxConfidence,
-      edge,
+      confidence: indicatorConfidence,
+      edge: Math.max(edge, 0.01),
       marketPrice,
-      modelProb,
-      reason: `${direction} ${maxConfidence.toFixed(0)}% conf, ${(edge * 100).toFixed(0)}% edge @ $${marketPrice.toFixed(2)}`
+      modelProb: indicatorConfidence / 100,
+      reason: `${direction} indicators ${bullScore}v${bearScore} @ $${marketPrice.toFixed(2)}`
     };
   }
 
