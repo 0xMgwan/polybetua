@@ -40,11 +40,6 @@ export class TradingEngine {
       return { shouldTrade: false, reason: `Already traded this market (${slug.slice(-10)})` };
     }
 
-    // SURVIVAL RULE #2: Max trades per hour
-    if (this._tradesInLastHour() >= this.config.maxTradesPerHour) {
-      return { shouldTrade: false, reason: `Hourly limit reached (${this.config.maxTradesPerHour} trades/hr)` };
-    }
-
     const now = Date.now();
 
     // CIRCUIT BREAKER: Stop if total exposure gets too high
