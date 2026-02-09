@@ -3,6 +3,7 @@ import path from "node:path";
 
 const LOG_DIR = path.join(process.cwd(), "logs");
 const PNL_FILE = path.join(LOG_DIR, "pnl.json");
+const CSV_FILE = path.join(LOG_DIR, "trades.csv");
 
 export class PositionTracker {
   constructor() {
@@ -13,13 +14,15 @@ export class PositionTracker {
     this.losses = 0;
     this.totalCost = 0;
     this.totalReturn = 0;
+    this.recentOutcomes = [];  // Track last N outcomes for streak analysis
     
     // Load saved P&L data
     this._loadState();
+    this._ensureCsvHeader();
   }
 
   // Record a new position when an order is placed
-  addPosition({ orderId, direction, outcome, price, size, confidence, edge, marketSlug, marketEndTime, priceToBeat }) {
+  addPosition({ orderId, direction, outcome, price, size, confidence, edge, marketSlug, marketEndTime, priceToBeat, upPrice, downPrice, indicators, bullScore, bearScore, signals }) {
     const position = {
       orderId,
       direction,       // "LONG" or "SHORT"
@@ -32,6 +35,12 @@ export class PositionTracker {
       marketSlug,
       marketEndTime,   // When the 15m market resolves
       priceToBeat,     // Market opening price - used to determine win/loss
+      upPrice: upPrice || null,
+      downPrice: downPrice || null,
+      indicators: indicators || {},
+      bullScore: bullScore || 0,
+      bearScore: bearScore || 0,
+      signals: signals || [],
       openedAt: Date.now(),
       status: "OPEN",  // OPEN -> RESOLVED_WIN / RESOLVED_LOSS
       pnl: null,
@@ -102,17 +111,12 @@ export class PositionTracker {
         const emoji = won ? "✅" : "❌";
         console.log(`[Tracker] ${emoji} Position resolved: ${pos.direction} ${pos.outcome} | P&L: $${pos.pnl.toFixed(2)} | Total P&L: $${this.totalPnl.toFixed(2)}`);
         
-        // Detailed loss analysis for learning
-        if (!won) {
-          console.log(`[Loss Analysis] ────────────────────────────`);
-          console.log(`[Loss Analysis] Market: ${pos.marketSlug}`);
-          console.log(`[Loss Analysis] Direction: ${pos.direction} | Outcome bet: ${pos.outcome}`);
-          console.log(`[Loss Analysis] Entry: $${pos.entryPrice?.toFixed(3) || 'N/A'} | Shares: ${pos.size} | Cost: $${pos.cost?.toFixed(2) || 'N/A'}`);
-          console.log(`[Loss Analysis] Confidence: ${pos.confidence?.toFixed(1) || 'N/A'}% | Edge: ${pos.edge ? (pos.edge * 100).toFixed(1) : 'N/A'}%`);
-          console.log(`[Loss Analysis] PriceToBeat: $${pos.priceToBeat?.toFixed(2) || 'N/A'} | Resolved BTC: $${currentPrice?.toFixed(2) || 'N/A'}`);
-          console.log(`[Loss Analysis] Result: BTC moved ${pos.outcome === 'Up' ? 'DOWN' : 'UP'} — prediction was WRONG`);
-          console.log(`[Loss Analysis] ────────────────────────────`);
-        }
+        // Track outcomes for streak analysis
+        this.recentOutcomes.push(won ? "W" : "L");
+        if (this.recentOutcomes.length > 20) this.recentOutcomes.shift();
+        
+        // Enhanced analysis for ALL trades (wins and losses)
+        this._enhancedTradeAnalysis(pos, currentPrice, won);
       }
     }
 
@@ -251,6 +255,92 @@ export class PositionTracker {
     }
     
     return { stop: false };
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  // ENHANCED TRADE ANALYSIS — learn from every trade
+  // ═══════════════════════════════════════════════════════════════
+  _enhancedTradeAnalysis(pos, resolvedPrice, won) {
+    const ptb = pos.priceToBeat;
+    const moveAbs = ptb && resolvedPrice ? Math.abs(resolvedPrice - ptb) : null;
+    const movePct = ptb && resolvedPrice ? ((resolvedPrice - ptb) / ptb) * 100 : null;
+    const btcDirection = resolvedPrice > ptb ? "UP" : "DOWN";
+    const wasOverreaction = movePct !== null && Math.abs(movePct) > 0.06; // >0.06% is a sharp 15m move
+    const oppositePrice = pos.outcome === "Up" ? pos.downPrice : pos.upPrice;
+    const combinedPrice = (pos.upPrice && pos.downPrice) ? pos.upPrice + pos.downPrice : null;
+    const arbOpportunity = combinedPrice !== null && combinedPrice < 0.97; // Up+Down < 97¢ = arb
+
+    const last3 = this.recentOutcomes.slice(-3).join(" → ");
+    const last5 = this.recentOutcomes.slice(-5).join(" → ");
+    const recentWinRate = this.recentOutcomes.length >= 5 
+      ? (this.recentOutcomes.slice(-5).filter(o => o === "W").length / 5 * 100).toFixed(0) 
+      : "N/A";
+
+    const tag = won ? "✅ WIN" : "❌ LOSS";
+    console.log(`[Analysis] ════════════════════════════════════════`);
+    console.log(`[Analysis] ${tag} | ${pos.direction} ${pos.outcome} | Market: ${pos.marketSlug?.slice(-20)}`);
+    console.log(`[Analysis] BTC: $${ptb?.toFixed(2) || 'N/A'} → $${resolvedPrice?.toFixed(2) || 'N/A'} (${btcDirection} ${movePct !== null ? movePct.toFixed(3) : 'N/A'}%)`);
+    console.log(`[Analysis] Entry: $${pos.entryPrice?.toFixed(3)} | Opposite was: $${oppositePrice?.toFixed(3) || 'N/A'}`);
+    console.log(`[Analysis] Up+Down combined: $${combinedPrice?.toFixed(3) || 'N/A'} ${arbOpportunity ? '⚡ ARB OPPORTUNITY MISSED' : ''}`);
+    console.log(`[Analysis] Sharp move? ${wasOverreaction ? 'YES — overreaction' : 'No — normal range'} | Move: $${moveAbs?.toFixed(2) || 'N/A'}`);
+    console.log(`[Analysis] Indicators: BULL ${pos.bullScore} vs BEAR ${pos.bearScore} | Signals: ${(pos.signals || []).join(', ') || 'N/A'}`);
+    console.log(`[Analysis] Streak: ${last3} | Last 5: ${last5} | Recent WR: ${recentWinRate}%`);
+
+    // Pattern detection
+    if (!won) {
+      if (wasOverreaction) {
+        console.log(`[Analysis] 💡 LESSON: Sharp ${btcDirection} move — consider mean-reversion (fade the move)`);
+      }
+      if (oppositePrice && oppositePrice < 0.45) {
+        console.log(`[Analysis] 💡 LESSON: Opposite token was cheap ($${oppositePrice.toFixed(3)}) — could have hedged`);
+      }
+      if (pos.bullScore && pos.bearScore && Math.abs(pos.bullScore - pos.bearScore) < 4) {
+        console.log(`[Analysis] 💡 LESSON: Weak signal (diff ${Math.abs(pos.bullScore - pos.bearScore)}) — should have skipped`);
+      }
+    }
+    if (won && wasOverreaction) {
+      console.log(`[Analysis] 💰 PATTERN: Won on sharp move — momentum was strong`);
+    }
+    console.log(`[Analysis] ════════════════════════════════════════`);
+
+    // Write to CSV for offline analysis
+    this._appendCsv(pos, resolvedPrice, won, movePct, wasOverreaction, oppositePrice, combinedPrice);
+  }
+
+  _ensureCsvHeader() {
+    try {
+      fs.mkdirSync(LOG_DIR, { recursive: true });
+      if (!fs.existsSync(CSV_FILE)) {
+        const header = "timestamp,market,direction,outcome,won,entryPrice,oppositePrice,combinedPrice,cost,pnl,btcStart,btcEnd,movePct,overreaction,bullScore,bearScore,signals,streak\n";
+        fs.writeFileSync(CSV_FILE, header, "utf8");
+      }
+    } catch (e) { /* ignore */ }
+  }
+
+  _appendCsv(pos, resolvedPrice, won, movePct, wasOverreaction, oppositePrice, combinedPrice) {
+    try {
+      const row = [
+        new Date().toISOString(),
+        pos.marketSlug || "",
+        pos.direction,
+        pos.outcome,
+        won ? "WIN" : "LOSS",
+        pos.entryPrice?.toFixed(3) || "",
+        oppositePrice?.toFixed(3) || "",
+        combinedPrice?.toFixed(3) || "",
+        pos.cost?.toFixed(2) || "",
+        pos.pnl?.toFixed(2) || "",
+        pos.priceToBeat?.toFixed(2) || "",
+        resolvedPrice?.toFixed(2) || "",
+        movePct?.toFixed(4) || "",
+        wasOverreaction ? "YES" : "NO",
+        pos.bullScore || 0,
+        pos.bearScore || 0,
+        `"${(pos.signals || []).join('; ')}"`,
+        `"${this.recentOutcomes.slice(-5).join('')}"`
+      ].join(",");
+      fs.appendFileSync(CSV_FILE, row + "\n", "utf8");
+    } catch (e) { /* ignore */ }
   }
 
   _saveState() {

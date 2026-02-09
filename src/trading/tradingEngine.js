@@ -81,172 +81,215 @@ export class TradingEngine {
     }
 
     // ═══════════════════════════════════════════════════════════════
-    // INDICATOR-FIRST STRATEGY: Indicators decide direction, not model
-    // The model confidence has proven unreliable (86% conf but wrong)
-    // Instead, we use a weighted scoring of real-time technical indicators
+    // MULTI-STRATEGY ENGINE: Arb → Mean-Reversion → Momentum
+    // Pure direction prediction is ~50% on 15m BTC. Instead we find
+    // +EV entries through market inefficiencies and selective signals.
     // ═══════════════════════════════════════════════════════════════
 
-    // Step 1: Score each indicator with weights
+    const upPrice = marketData.upPrice;
+    const downPrice = marketData.downPrice;
+    const combinedPrice = (upPrice && downPrice) ? upPrice + downPrice : null;
+    const ptb = marketData.priceToBeat;
+
+    console.log(`[Strategy] ══════════════════════════════════════`);
+    console.log(`[Strategy] Up: $${upPrice?.toFixed(3) || 'N/A'} | Down: $${downPrice?.toFixed(3) || 'N/A'} | Combined: $${combinedPrice?.toFixed(3) || 'N/A'}`);
+
+    // ─── STRATEGY 1: ARB / HEDGE ───────────────────────────────
+    // If Up + Down < 97¢, buy the cheaper side for guaranteed +EV
+    if (combinedPrice !== null && combinedPrice < 0.97) {
+      const cheaperSide = upPrice <= downPrice ? "Up" : "Down";
+      const cheaperPrice = Math.min(upPrice, downPrice);
+      console.log(`[Strategy] ⚡ ARB DETECTED: Combined $${combinedPrice.toFixed(3)} < $0.97 — buying ${cheaperSide} @ $${cheaperPrice.toFixed(3)}`);
+      
+      return {
+        shouldTrade: true,
+        direction: cheaperSide === "Up" ? "LONG" : "SHORT",
+        targetOutcome: cheaperSide,
+        confidence: 95,
+        edge: (1 - combinedPrice),
+        marketPrice: cheaperPrice,
+        modelProb: 0.95,
+        strategy: "ARB",
+        bullScore: 0, bearScore: 0, signals: [`ARB:combined=$${combinedPrice.toFixed(3)}`],
+        reason: `ARB: ${cheaperSide} @ $${cheaperPrice.toFixed(3)} (combined $${combinedPrice.toFixed(3)})`
+      };
+    }
+
+    // ─── STRATEGY 2: CHEAP TOKEN HARVESTING ────────────────────
+    // If either token is very cheap (<35¢), it's underpriced — buy it
+    // At 35¢, we risk $3.50 to win $6.50 (1.86:1 reward:risk)
+    const cheapThreshold = 0.35;
+    if (upPrice && upPrice < cheapThreshold && upPrice > 0.05) {
+      console.log(`[Strategy] 🎯 CHEAP UP: $${upPrice.toFixed(3)} < $${cheapThreshold} — high reward:risk`);
+      return {
+        shouldTrade: true,
+        direction: "LONG",
+        targetOutcome: "Up",
+        confidence: 60,
+        edge: 0.50 - upPrice,
+        marketPrice: upPrice,
+        modelProb: 0.50,
+        strategy: "CHEAP_TOKEN",
+        bullScore: 0, bearScore: 0, signals: [`CHEAP_UP:$${upPrice.toFixed(3)}`],
+        reason: `CHEAP Up @ $${upPrice.toFixed(3)} (risk $${(upPrice*11).toFixed(2)}, reward $${((1-upPrice)*11).toFixed(2)})`
+      };
+    }
+    if (downPrice && downPrice < cheapThreshold && downPrice > 0.05) {
+      console.log(`[Strategy] 🎯 CHEAP DOWN: $${downPrice.toFixed(3)} < $${cheapThreshold} — high reward:risk`);
+      return {
+        shouldTrade: true,
+        direction: "SHORT",
+        targetOutcome: "Down",
+        confidence: 60,
+        edge: 0.50 - downPrice,
+        marketPrice: downPrice,
+        modelProb: 0.50,
+        strategy: "CHEAP_TOKEN",
+        bullScore: 0, bearScore: 0, signals: [`CHEAP_DOWN:$${downPrice.toFixed(3)}`],
+        reason: `CHEAP Down @ $${downPrice.toFixed(3)} (risk $${(downPrice*11).toFixed(2)}, reward $${((1-downPrice)*11).toFixed(2)})`
+      };
+    }
+
+    // ─── STRATEGY 3: MEAN-REVERSION (overreaction fade) ────────
+    // If BTC has moved sharply in one direction within this candle,
+    // the market overprices that direction — buy the opposite
+    if (ptb && indicators.lastPrice) {
+      const currentMove = ((indicators.lastPrice - ptb) / ptb) * 100;
+      const sharpMoveThreshold = 0.08; // 0.08% = ~$57 on $71k BTC
+      
+      if (Math.abs(currentMove) > sharpMoveThreshold) {
+        // BTC moved sharply UP → market overprices Up → buy cheap Down
+        // BTC moved sharply DOWN → market overprices Down → buy cheap Up
+        const fadeDirection = currentMove > 0 ? "SHORT" : "LONG";
+        const fadeOutcome = fadeDirection === "LONG" ? "Up" : "Down";
+        const fadePrice = fadeDirection === "LONG" ? upPrice : downPrice;
+        
+        if (fadePrice && fadePrice < 0.52) {
+          console.log(`[Strategy] 🔄 MEAN-REVERSION: BTC moved ${currentMove > 0 ? 'UP' : 'DOWN'} ${Math.abs(currentMove).toFixed(3)}% — fading with ${fadeOutcome} @ $${fadePrice.toFixed(3)}`);
+          return {
+            shouldTrade: true,
+            direction: fadeDirection,
+            targetOutcome: fadeOutcome,
+            confidence: 65,
+            edge: 0.50 - fadePrice,
+            marketPrice: fadePrice,
+            modelProb: 0.55,
+            strategy: "MEAN_REVERSION",
+            bullScore: 0, bearScore: 0, signals: [`FADE:move=${currentMove.toFixed(3)}%`, `${fadeOutcome}@$${fadePrice.toFixed(3)}`],
+            reason: `FADE ${currentMove > 0 ? 'UP' : 'DOWN'} move (${Math.abs(currentMove).toFixed(3)}%) → ${fadeOutcome} @ $${fadePrice.toFixed(3)}`
+          };
+        }
+      }
+    }
+
+    // ─── STRATEGY 4: STRONG MOMENTUM (indicator consensus) ─────
+    // Only take momentum trades when indicators OVERWHELMINGLY agree
     let bullScore = 0;
     let bearScore = 0;
     const signals = [];
 
-    // MACD Histogram (weight: 3) — strongest trend indicator
+    // MACD Histogram (weight: 3)
     if (indicators.macdHist !== undefined && indicators.macdHist !== null) {
-      if (indicators.macdHist > 0) {
-        bullScore += 3;
-        signals.push(`MACD:BULL(+3)`);
-      } else if (indicators.macdHist < 0) {
-        bearScore += 3;
-        signals.push(`MACD:BEAR(+3)`);
-      }
-      // Bonus for expanding MACD (momentum accelerating)
+      if (indicators.macdHist > 0) { bullScore += 3; signals.push(`MACD:BULL(+3)`); }
+      else if (indicators.macdHist < 0) { bearScore += 3; signals.push(`MACD:BEAR(+3)`); }
       if (indicators.macdHistDelta !== undefined && indicators.macdHistDelta !== null) {
-        if (indicators.macdHistDelta > 0 && indicators.macdHist > 0) {
-          bullScore += 1;
-          signals.push(`MACD-expand:BULL(+1)`);
-        } else if (indicators.macdHistDelta < 0 && indicators.macdHist < 0) {
-          bearScore += 1;
-          signals.push(`MACD-expand:BEAR(+1)`);
-        }
+        if (indicators.macdHistDelta > 0 && indicators.macdHist > 0) { bullScore += 1; signals.push(`MACD-exp:BULL(+1)`); }
+        else if (indicators.macdHistDelta < 0 && indicators.macdHist < 0) { bearScore += 1; signals.push(`MACD-exp:BEAR(+1)`); }
       }
     }
 
-    // Price vs VWAP (weight: 2) — price position relative to fair value
+    // Price vs VWAP (weight: 2)
     if (indicators.priceVsVwap !== undefined) {
-      if (indicators.priceVsVwap > 0) {
-        bullScore += 2;
-        signals.push(`PriceVsVWAP:BULL(+2)`);
-      } else if (indicators.priceVsVwap < 0) {
-        bearScore += 2;
-        signals.push(`PriceVsVWAP:BEAR(+2)`);
-      }
+      if (indicators.priceVsVwap > 0) { bullScore += 2; signals.push(`VWAP:BULL(+2)`); }
+      else if (indicators.priceVsVwap < 0) { bearScore += 2; signals.push(`VWAP:BEAR(+2)`); }
     }
 
-    // VWAP Slope (weight: 2) — trend direction
+    // VWAP Slope (weight: 2)
     if (indicators.vwapSlope !== undefined && indicators.vwapSlope !== null) {
-      if (indicators.vwapSlope > 0) {
-        bullScore += 2;
-        signals.push(`VWAPslope:BULL(+2)`);
-      } else if (indicators.vwapSlope < 0) {
-        bearScore += 2;
-        signals.push(`VWAPslope:BEAR(+2)`);
-      }
+      if (indicators.vwapSlope > 0) { bullScore += 2; signals.push(`Slope:BULL(+2)`); }
+      else if (indicators.vwapSlope < 0) { bearScore += 2; signals.push(`Slope:BEAR(+2)`); }
     }
 
-    // Heiken Ashi (weight: 2, +1 bonus for consecutive candles)
+    // Heiken Ashi (weight: 2, +1 streak bonus)
     if (indicators.heikenColor !== undefined && indicators.heikenColor !== null) {
       if (indicators.heikenColor === "green") {
-        bullScore += 2;
-        signals.push(`Heiken:BULL(+2)`);
-        if (indicators.heikenCount >= 3) {
-          bullScore += 1;
-          signals.push(`Heiken-streak(${indicators.heikenCount}):BULL(+1)`);
-        }
+        bullScore += 2; signals.push(`HA:BULL(+2)`);
+        if (indicators.heikenCount >= 3) { bullScore += 1; signals.push(`HA-streak(${indicators.heikenCount}):+1`); }
       } else if (indicators.heikenColor === "red") {
-        bearScore += 2;
-        signals.push(`Heiken:BEAR(+2)`);
-        if (indicators.heikenCount >= 3) {
-          bearScore += 1;
-          signals.push(`Heiken-streak(${indicators.heikenCount}):BEAR(+1)`);
-        }
+        bearScore += 2; signals.push(`HA:BEAR(+2)`);
+        if (indicators.heikenCount >= 3) { bearScore += 1; signals.push(`HA-streak(${indicators.heikenCount}):+1`); }
       }
     }
 
-    // RSI (weight: 1) — momentum confirmation
+    // RSI (weight: 1)
     if (indicators.rsi !== undefined && indicators.rsi !== null) {
-      if (indicators.rsi > 55) {
-        bullScore += 1;
-        signals.push(`RSI(${indicators.rsi.toFixed(0)}):BULL(+1)`);
-      } else if (indicators.rsi < 45) {
-        bearScore += 1;
-        signals.push(`RSI(${indicators.rsi.toFixed(0)}):BEAR(+1)`);
-      } else {
-        signals.push(`RSI(${indicators.rsi.toFixed(0)}):NEUTRAL`);
-      }
+      if (indicators.rsi > 55) { bullScore += 1; signals.push(`RSI(${indicators.rsi.toFixed(0)}):BULL`); }
+      else if (indicators.rsi < 45) { bearScore += 1; signals.push(`RSI(${indicators.rsi.toFixed(0)}):BEAR`); }
+      else { signals.push(`RSI(${indicators.rsi.toFixed(0)}):NEUT`); }
     }
 
-    // BTC Price Delta 1m (weight: 1) — immediate momentum
+    // Delta 1m (weight: 1)
     if (indicators.delta1m !== undefined && indicators.delta1m !== null) {
-      if (indicators.delta1m > 0) {
-        bullScore += 1;
-        signals.push(`Δ1m(+$${indicators.delta1m.toFixed(0)}):BULL(+1)`);
-      } else if (indicators.delta1m < 0) {
-        bearScore += 1;
-        signals.push(`Δ1m(-$${Math.abs(indicators.delta1m).toFixed(0)}):BEAR(+1)`);
-      }
+      if (indicators.delta1m > 0) { bullScore += 1; signals.push(`Δ1m:BULL`); }
+      else if (indicators.delta1m < 0) { bearScore += 1; signals.push(`Δ1m:BEAR`); }
     }
 
-    // BTC Price Delta 3m (weight: 1) — short-term trend
+    // Delta 3m (weight: 1)
     if (indicators.delta3m !== undefined && indicators.delta3m !== null) {
-      if (indicators.delta3m > 0) {
-        bullScore += 1;
-        signals.push(`Δ3m(+$${indicators.delta3m.toFixed(0)}):BULL(+1)`);
-      } else if (indicators.delta3m < 0) {
-        bearScore += 1;
-        signals.push(`Δ3m(-$${Math.abs(indicators.delta3m).toFixed(0)}):BEAR(+1)`);
-      }
+      if (indicators.delta3m > 0) { bullScore += 1; signals.push(`Δ3m:BULL`); }
+      else if (indicators.delta3m < 0) { bearScore += 1; signals.push(`Δ3m:BEAR`); }
     }
 
-    const totalScore = bullScore + bearScore;
     const scoreDiff = Math.abs(bullScore - bearScore);
-
-    // Step 2: Log comprehensive indicator analysis
-    console.log(`[Strategy] ══════════════════════════════════════`);
-    console.log(`[Strategy] BULL score: ${bullScore} | BEAR score: ${bearScore} | Diff: ${scoreDiff}`);
+    console.log(`[Strategy] BULL: ${bullScore} | BEAR: ${bearScore} | Diff: ${scoreDiff}`);
     console.log(`[Strategy] Signals: ${signals.join(', ')}`);
 
-    // Step 3: Require minimum score difference for clear signal
-    const minScoreDiff = 3; // Need at least 3-point advantage
+    // STRICT: Need 5+ point advantage for momentum trades (was 3 — too loose)
+    const minScoreDiff = 5;
     if (scoreDiff < minScoreDiff) {
-      console.log(`[Strategy] ⚠ Signal too weak (diff ${scoreDiff} < ${minScoreDiff}) — SKIP`);
+      console.log(`[Strategy] ⚠ Momentum too weak (diff ${scoreDiff} < ${minScoreDiff}) — SKIP`);
+      console.log(`[Strategy] ══════════════════════════════════════`);
       return {
         shouldTrade: false,
-        reason: `Mixed signals (BULL:${bullScore} vs BEAR:${bearScore}, need ${minScoreDiff}+ diff)`
+        reason: `Weak momentum (BULL:${bullScore} vs BEAR:${bearScore}, need ${minScoreDiff}+ diff)`
       };
     }
 
-    // Step 4: Direction decided by indicators, NOT model
     let direction = bullScore > bearScore ? "LONG" : "SHORT";
     let targetOutcome = direction === "LONG" ? "Up" : "Down";
-    let marketPrice = direction === "LONG" ? marketData.upPrice : marketData.downPrice;
-
-    console.log(`[Strategy] ✅ Direction: ${direction} (score: ${direction === "LONG" ? bullScore : bearScore})`);
+    let marketPrice = direction === "LONG" ? upPrice : downPrice;
 
     if (!marketPrice || marketPrice <= 0 || marketPrice >= 1) {
       return { shouldTrade: false, reason: "Invalid market price" };
     }
 
-    // Step 5: Price cap for risk/reward
-    const maxPrice = this.config.maxTokenPrice || 0.55;
-    if (marketPrice > maxPrice) {
-      return { shouldTrade: false, reason: `Price too high ($${marketPrice.toFixed(2)} > $${maxPrice.toFixed(2)})` };
+    // Only buy tokens under 52¢ for momentum trades (stricter than other strategies)
+    if (marketPrice > 0.52) {
+      console.log(`[Strategy] ⚠ Price too high for momentum ($${marketPrice.toFixed(3)} > $0.52) — SKIP`);
+      console.log(`[Strategy] ══════════════════════════════════════`);
+      return { shouldTrade: false, reason: `Momentum price too high ($${marketPrice.toFixed(2)} > $0.52)` };
     }
 
-    // Step 6: Calculate edge based on indicator strength (not model)
-    const indicatorConfidence = (Math.max(bullScore, bearScore) / totalScore) * 100;
-    const edge = (indicatorConfidence / 100) - marketPrice;
-
-    // Step 7: Don't trade if spread is too wide (>5%)
+    // Spread check
     if (marketData.spread !== undefined && marketData.spread !== null && marketData.spread > 0.05) {
-      return {
-        shouldTrade: false,
-        reason: `Spread too wide (${(marketData.spread * 100).toFixed(1)}% > 5%)`
-      };
+      return { shouldTrade: false, reason: `Spread too wide (${(marketData.spread * 100).toFixed(1)}% > 5%)` };
     }
 
-    console.log(`[Strategy] Entry: ${direction} ${targetOutcome} @ $${marketPrice.toFixed(3)} | Indicator conf: ${indicatorConfidence.toFixed(0)}%`);
+    const indicatorConf = (Math.max(bullScore, bearScore) / (bullScore + bearScore)) * 100;
+    console.log(`[Strategy] ✅ MOMENTUM: ${direction} ${targetOutcome} @ $${marketPrice.toFixed(3)} | Conf: ${indicatorConf.toFixed(0)}%`);
     console.log(`[Strategy] ══════════════════════════════════════`);
 
     return {
       shouldTrade: true,
       direction,
       targetOutcome,
-      confidence: indicatorConfidence,
-      edge: Math.max(edge, 0.01),
+      confidence: indicatorConf,
+      edge: Math.max((indicatorConf / 100) - marketPrice, 0.01),
       marketPrice,
-      modelProb: indicatorConfidence / 100,
-      reason: `${direction} indicators ${bullScore}v${bearScore} @ $${marketPrice.toFixed(2)}`
+      modelProb: indicatorConf / 100,
+      strategy: "MOMENTUM",
+      bullScore, bearScore, signals,
+      reason: `MOMENTUM ${direction} ${bullScore}v${bearScore} @ $${marketPrice.toFixed(2)}`
     };
   }
 
@@ -328,7 +371,7 @@ export class TradingEngine {
       this.tradeHistory.push(trade);
       this.currentPosition = trade;
 
-      // Track position for P&L
+      // Track position for P&L (with extra data for enhanced analysis)
       this.positionTracker.addPosition({
         orderId: order.orderID,
         direction: signal.direction,
@@ -339,7 +382,13 @@ export class TradingEngine {
         edge: signal.edge,
         marketSlug: marketData.marketSlug,
         marketEndTime: marketData.marketEndTime || null,
-        priceToBeat  // Store market opening price for correct win/loss determination
+        priceToBeat,  // Store market opening price for correct win/loss determination
+        upPrice: marketData.upPrice,
+        downPrice: marketData.downPrice,
+        indicators: signal.indicators || {},
+        bullScore: signal.bullScore || 0,
+        bearScore: signal.bearScore || 0,
+        signals: signal.signals || []
       });
 
       return {
