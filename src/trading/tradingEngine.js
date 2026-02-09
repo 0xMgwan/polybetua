@@ -64,6 +64,12 @@ export class TradingEngine {
       };
     }
 
+    // LOSS-STREAK PROTECTION: Pause after 3 consecutive losses
+    const streakCheck = this.positionTracker.shouldStopTrading();
+    if (streakCheck.stop) {
+      return { shouldTrade: false, reason: `Loss protection: ${streakCheck.reason}` };
+    }
+
     if (!prediction || !marketData) {
       return { shouldTrade: false, reason: "Missing prediction or market data" };
     }
@@ -116,68 +122,99 @@ export class TradingEngine {
     }
 
     // ─── STRATEGY 2: CHEAP TOKEN HARVESTING ────────────────────
-    // If either token is very cheap (<35¢), it's underpriced — buy it
-    // At 35¢, we risk $3.50 to win $6.50 (1.86:1 reward:risk)
-    const cheapThreshold = 0.35;
-    if (upPrice && upPrice < cheapThreshold && upPrice > 0.05) {
-      console.log(`[Strategy] 🎯 CHEAP UP: $${upPrice.toFixed(3)} < $${cheapThreshold} — high reward:risk`);
-      return {
-        shouldTrade: true,
-        direction: "LONG",
-        targetOutcome: "Up",
-        confidence: 60,
-        edge: 0.50 - upPrice,
-        marketPrice: upPrice,
-        modelProb: 0.50,
-        strategy: "CHEAP_TOKEN",
-        bullScore: 0, bearScore: 0, signals: [`CHEAP_UP:$${upPrice.toFixed(3)}`],
-        reason: `CHEAP Up @ $${upPrice.toFixed(3)} (risk $${(upPrice*11).toFixed(2)}, reward $${((1-upPrice)*11).toFixed(2)})`
-      };
+    // Buy cheap tokens ONLY when momentum supports the cheap side
+    // Problem: tokens are cheap because the market is moving against them
+    // Fix: require at least some momentum confirmation before buying
+    const cheapThreshold = 0.30; // Lowered from 0.35 — need really cheap
+    const hasMomentumData = indicators.delta1m !== undefined || indicators.macdHist !== undefined;
+    
+    if (hasMomentumData && upPrice && upPrice < cheapThreshold && upPrice > 0.08) {
+      // Only buy cheap Up if momentum is NOT strongly bearish
+      const bearishMomentum = (indicators.delta1m < 0 && indicators.delta3m < 0) || 
+                              (indicators.macdHist !== undefined && indicators.macdHist < -0.5);
+      if (!bearishMomentum) {
+        console.log(`[Strategy] 🎯 CHEAP UP: $${upPrice.toFixed(3)} < $${cheapThreshold} + momentum OK`);
+        return {
+          shouldTrade: true,
+          direction: "LONG",
+          targetOutcome: "Up",
+          confidence: 60,
+          edge: 0.50 - upPrice,
+          marketPrice: upPrice,
+          modelProb: 0.50,
+          strategy: "CHEAP_TOKEN",
+          bullScore: 0, bearScore: 0, signals: [`CHEAP_UP:$${upPrice.toFixed(3)}`, `momentum:OK`],
+          reason: `CHEAP Up @ $${upPrice.toFixed(3)} (momentum not against us)`
+        };
+      } else {
+        console.log(`[Strategy] ⚠ CHEAP UP $${upPrice.toFixed(3)} BLOCKED — bearish momentum (falling knife)`);
+      }
     }
-    if (downPrice && downPrice < cheapThreshold && downPrice > 0.05) {
-      console.log(`[Strategy] 🎯 CHEAP DOWN: $${downPrice.toFixed(3)} < $${cheapThreshold} — high reward:risk`);
-      return {
-        shouldTrade: true,
-        direction: "SHORT",
-        targetOutcome: "Down",
-        confidence: 60,
-        edge: 0.50 - downPrice,
-        marketPrice: downPrice,
-        modelProb: 0.50,
-        strategy: "CHEAP_TOKEN",
-        bullScore: 0, bearScore: 0, signals: [`CHEAP_DOWN:$${downPrice.toFixed(3)}`],
-        reason: `CHEAP Down @ $${downPrice.toFixed(3)} (risk $${(downPrice*11).toFixed(2)}, reward $${((1-downPrice)*11).toFixed(2)})`
-      };
+    if (hasMomentumData && downPrice && downPrice < cheapThreshold && downPrice > 0.08) {
+      // Only buy cheap Down if momentum is NOT strongly bullish
+      const bullishMomentum = (indicators.delta1m > 0 && indicators.delta3m > 0) || 
+                              (indicators.macdHist !== undefined && indicators.macdHist > 0.5);
+      if (!bullishMomentum) {
+        console.log(`[Strategy] 🎯 CHEAP DOWN: $${downPrice.toFixed(3)} < $${cheapThreshold} + momentum OK`);
+        return {
+          shouldTrade: true,
+          direction: "SHORT",
+          targetOutcome: "Down",
+          confidence: 60,
+          edge: 0.50 - downPrice,
+          marketPrice: downPrice,
+          modelProb: 0.50,
+          strategy: "CHEAP_TOKEN",
+          bullScore: 0, bearScore: 0, signals: [`CHEAP_DOWN:$${downPrice.toFixed(3)}`, `momentum:OK`],
+          reason: `CHEAP Down @ $${downPrice.toFixed(3)} (momentum not against us)`
+        };
+      } else {
+        console.log(`[Strategy] ⚠ CHEAP DOWN $${downPrice.toFixed(3)} BLOCKED — bullish momentum (falling knife)`);
+      }
     }
 
     // ─── STRATEGY 3: MEAN-REVERSION (overreaction fade) ────────
-    // If BTC has moved sharply in one direction within this candle,
-    // the market overprices that direction — buy the opposite
+    // Only fade when the move shows EXHAUSTION signs:
+    // 1. Move must be very large (>0.15% — was 0.08% which was too early)
+    // 2. RSI must be at extreme (>70 or <30) — confirming overextension
+    // 3. MACD histogram must be decelerating — momentum fading
+    // Without exhaustion, we're just catching falling knives
     if (ptb && indicators.lastPrice) {
       const currentMove = ((indicators.lastPrice - ptb) / ptb) * 100;
-      const sharpMoveThreshold = 0.08; // 0.08% = ~$57 on $71k BTC
+      const sharpMoveThreshold = 0.15; // 0.15% = ~$107 on $71k BTC (was 0.08 — too sensitive)
       
       if (Math.abs(currentMove) > sharpMoveThreshold) {
-        // BTC moved sharply UP → market overprices Up → buy cheap Down
-        // BTC moved sharply DOWN → market overprices Down → buy cheap Up
-        const fadeDirection = currentMove > 0 ? "SHORT" : "LONG";
-        const fadeOutcome = fadeDirection === "LONG" ? "Up" : "Down";
-        const fadePrice = fadeDirection === "LONG" ? upPrice : downPrice;
+        // Check for exhaustion signals before fading
+        const rsiExtreme = indicators.rsi !== undefined && indicators.rsi !== null &&
+          ((currentMove > 0 && indicators.rsi > 70) || (currentMove < 0 && indicators.rsi < 30));
+        const macdDecelerating = indicators.macdHistDelta !== undefined && indicators.macdHistDelta !== null &&
+          ((currentMove > 0 && indicators.macdHistDelta < 0) || (currentMove < 0 && indicators.macdHistDelta > 0));
         
-        if (fadePrice && fadePrice < 0.52) {
-          console.log(`[Strategy] 🔄 MEAN-REVERSION: BTC moved ${currentMove > 0 ? 'UP' : 'DOWN'} ${Math.abs(currentMove).toFixed(3)}% — fading with ${fadeOutcome} @ $${fadePrice.toFixed(3)}`);
-          return {
-            shouldTrade: true,
-            direction: fadeDirection,
-            targetOutcome: fadeOutcome,
-            confidence: 65,
-            edge: 0.50 - fadePrice,
-            marketPrice: fadePrice,
-            modelProb: 0.55,
-            strategy: "MEAN_REVERSION",
-            bullScore: 0, bearScore: 0, signals: [`FADE:move=${currentMove.toFixed(3)}%`, `${fadeOutcome}@$${fadePrice.toFixed(3)}`],
-            reason: `FADE ${currentMove > 0 ? 'UP' : 'DOWN'} move (${Math.abs(currentMove).toFixed(3)}%) → ${fadeOutcome} @ $${fadePrice.toFixed(3)}`
-          };
+        const exhaustionCount = (rsiExtreme ? 1 : 0) + (macdDecelerating ? 1 : 0);
+        
+        if (exhaustionCount >= 1) {
+          const fadeDirection = currentMove > 0 ? "SHORT" : "LONG";
+          const fadeOutcome = fadeDirection === "LONG" ? "Up" : "Down";
+          const fadePrice = fadeDirection === "LONG" ? upPrice : downPrice;
+          
+          if (fadePrice && fadePrice < 0.45) { // Stricter price cap (was 0.52)
+            console.log(`[Strategy] 🔄 MEAN-REVERSION: BTC ${currentMove > 0 ? 'UP' : 'DOWN'} ${Math.abs(currentMove).toFixed(3)}% | RSI extreme: ${rsiExtreme} | MACD decel: ${macdDecelerating}`);
+            console.log(`[Strategy] Fading with ${fadeOutcome} @ $${fadePrice.toFixed(3)} (exhaustion signals: ${exhaustionCount}/2)`);
+            return {
+              shouldTrade: true,
+              direction: fadeDirection,
+              targetOutcome: fadeOutcome,
+              confidence: 65,
+              edge: 0.50 - fadePrice,
+              marketPrice: fadePrice,
+              modelProb: 0.55,
+              strategy: "MEAN_REVERSION",
+              bullScore: 0, bearScore: 0, signals: [`FADE:move=${currentMove.toFixed(3)}%`, `RSI:${indicators.rsi?.toFixed(0)||'?'}`, `exhaustion:${exhaustionCount}/2`],
+              reason: `FADE ${currentMove > 0 ? 'UP' : 'DOWN'} (${Math.abs(currentMove).toFixed(3)}%) + exhaustion → ${fadeOutcome} @ $${fadePrice.toFixed(3)}`
+            };
+          }
+        } else {
+          console.log(`[Strategy] ⚠ Sharp move ${currentMove.toFixed(3)}% but NO exhaustion (RSI:${indicators.rsi?.toFixed(0)||'?'}, MACD-decel:${macdDecelerating}) — NOT fading`);
         }
       }
     }
