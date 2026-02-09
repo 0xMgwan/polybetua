@@ -18,8 +18,14 @@ export class PositionTracker {
     this.pausedAt = null;      // When trading was paused (3+ losses)
     this.pauseReason = null;   // Why trading was paused
     
-    // Load saved P&L data
-    this._loadState();
+    // Reset P&L if requested (set RESET_PNL=true to start fresh)
+    if (process.env.RESET_PNL === "true") {
+      console.log("[Tracker] ⚠ RESET_PNL=true — wiping old P&L data, starting fresh");
+      this._saveState(); // Save clean state
+    } else {
+      // Load saved P&L data
+      this._loadState();
+    }
     this._ensureCsvHeader();
   }
 
