@@ -459,7 +459,8 @@ export class TradingEngine {
         indicators: signal.indicators || {},
         bullScore: signal.bullScore || 0,
         bearScore: signal.bearScore || 0,
-        signals: signal.signals || []
+        signals: signal.signals || [],
+        strategy: signal.strategy || "UNKNOWN"
       });
 
       return {

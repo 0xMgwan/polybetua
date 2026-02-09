@@ -4,6 +4,7 @@ import path from "node:path";
 const LOG_DIR = path.join(process.cwd(), "logs");
 const PNL_FILE = path.join(LOG_DIR, "pnl.json");
 const CSV_FILE = path.join(LOG_DIR, "trades.csv");
+const JOURNAL_FILE = path.join(LOG_DIR, "journal.json");
 
 export class PositionTracker {
   constructor() {
@@ -30,7 +31,7 @@ export class PositionTracker {
   }
 
   // Record a new position when an order is placed
-  addPosition({ orderId, direction, outcome, price, size, confidence, edge, marketSlug, marketEndTime, priceToBeat, upPrice, downPrice, indicators, bullScore, bearScore, signals }) {
+  addPosition({ orderId, direction, outcome, price, size, confidence, edge, marketSlug, marketEndTime, priceToBeat, upPrice, downPrice, indicators, bullScore, bearScore, signals, strategy }) {
     const position = {
       orderId,
       direction,       // "LONG" or "SHORT"
@@ -49,6 +50,7 @@ export class PositionTracker {
       bullScore: bullScore || 0,
       bearScore: bearScore || 0,
       signals: signals || [],
+      strategy: strategy || "UNKNOWN",
       openedAt: Date.now(),
       status: "OPEN",  // OPEN -> RESOLVED_WIN / RESOLVED_LOSS
       pnl: null,
@@ -346,13 +348,132 @@ export class PositionTracker {
 
     // Write to CSV for offline analysis
     this._appendCsv(pos, resolvedPrice, won, movePct, wasOverreaction, oppositePrice, combinedPrice);
+
+    // Save to persistent journal
+    this._appendJournal(pos, resolvedPrice, won, movePct, wasOverreaction, oppositePrice, combinedPrice);
+
+    // Rolling window analysis every 4 trades
+    const totalTrades = this.wins + this.losses;
+    if (totalTrades > 0 && totalTrades % 4 === 0) {
+      this._printRollingAnalysis();
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  // ROLLING WINDOW ANALYSIS — printed every 4 trades
+  // ═══════════════════════════════════════════════════════════════
+  _printRollingAnalysis() {
+    const closed = this.closedPositions;
+    const total = closed.length;
+    
+    const windows = [
+      { name: "Last 4", trades: closed.slice(-4) },
+      { name: "Last 10", trades: closed.slice(-10) },
+      { name: "All time", trades: closed }
+    ];
+
+    console.log(`\n[Memory] ╔══════════════════════════════════════════════╗`);
+    console.log(`[Memory] ║  TRADE MEMORY — ${total} trades recorded          ║`);
+    console.log(`[Memory] ╠══════════════════════════════════════════════╣`);
+
+    for (const w of windows) {
+      if (w.trades.length === 0) continue;
+      const wins = w.trades.filter(t => t.status === "RESOLVED_WIN").length;
+      const losses = w.trades.length - wins;
+      const wr = (wins / w.trades.length * 100).toFixed(0);
+      const pnl = w.trades.reduce((s, t) => s + (t.pnl || 0), 0);
+      const avgEntry = w.trades.reduce((s, t) => s + (t.entryPrice || 0), 0) / w.trades.length;
+      console.log(`[Memory] ║ ${w.name.padEnd(8)}: ${wins}W/${losses}L (${wr}%) | P&L: $${pnl.toFixed(2)} | Avg entry: $${avgEntry.toFixed(3)}`);
+    }
+
+    // Strategy breakdown
+    const stratCounts = {};
+    for (const t of closed) {
+      const strat = t.strategy || "UNKNOWN";
+      if (!stratCounts[strat]) stratCounts[strat] = { wins: 0, losses: 0, pnl: 0 };
+      if (t.status === "RESOLVED_WIN") stratCounts[strat].wins++;
+      else stratCounts[strat].losses++;
+      stratCounts[strat].pnl += t.pnl || 0;
+    }
+    console.log(`[Memory] ╠══════════════════════════════════════════════╣`);
+    console.log(`[Memory] ║ STRATEGY BREAKDOWN:`);
+    for (const [strat, data] of Object.entries(stratCounts)) {
+      const wr = ((data.wins / (data.wins + data.losses)) * 100).toFixed(0);
+      console.log(`[Memory] ║   ${strat.padEnd(18)}: ${data.wins}W/${data.losses}L (${wr}%) | P&L: $${data.pnl.toFixed(2)}`);
+    }
+
+    // Price tier breakdown
+    const tierCounts = { cheap: { w: 0, l: 0, pnl: 0 }, mid: { w: 0, l: 0, pnl: 0 }, expensive: { w: 0, l: 0, pnl: 0 } };
+    for (const t of closed) {
+      const tier = (t.entryPrice || 0) < 0.30 ? "cheap" : (t.entryPrice || 0) < 0.40 ? "mid" : "expensive";
+      if (t.status === "RESOLVED_WIN") tierCounts[tier].w++;
+      else tierCounts[tier].l++;
+      tierCounts[tier].pnl += t.pnl || 0;
+    }
+    console.log(`[Memory] ╠══════════════════════════════════════════════╣`);
+    console.log(`[Memory] ║ PRICE TIER BREAKDOWN:`);
+    for (const [tier, data] of Object.entries(tierCounts)) {
+      if (data.w + data.l === 0) continue;
+      const wr = ((data.w / (data.w + data.l)) * 100).toFixed(0);
+      console.log(`[Memory] ║   ${tier.padEnd(12)}: ${data.w}W/${data.l}L (${wr}%) | P&L: $${data.pnl.toFixed(2)}`);
+    }
+
+    // Key insights
+    console.log(`[Memory] ╠══════════════════════════════════════════════╣`);
+    const last4 = closed.slice(-4);
+    const last4WR = last4.length > 0 ? (last4.filter(t => t.status === "RESOLVED_WIN").length / last4.length * 100) : 0;
+    if (last4WR >= 75) {
+      console.log(`[Memory] ║ 🔥 HOT STREAK: ${last4WR.toFixed(0)}% win rate last 4 trades`);
+    } else if (last4WR <= 25) {
+      console.log(`[Memory] ║ ⚠ COLD STREAK: ${last4WR.toFixed(0)}% win rate last 4 trades — strategy may need adjustment`);
+    }
+    const bestStrat = Object.entries(stratCounts).sort((a, b) => b[1].pnl - a[1].pnl)[0];
+    if (bestStrat) {
+      console.log(`[Memory] ║ 💰 Best strategy: ${bestStrat[0]} ($${bestStrat[1].pnl.toFixed(2)} P&L)`);
+    }
+    console.log(`[Memory] ╚══════════════════════════════════════════════╝\n`);
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  // PERSISTENT JOURNAL — survives restarts, detailed trade records
+  // ═══════════════════════════════════════════════════════════════
+  _appendJournal(pos, resolvedPrice, won, movePct, wasOverreaction, oppositePrice, combinedPrice) {
+    try {
+      fs.mkdirSync(LOG_DIR, { recursive: true });
+      let journal = [];
+      if (fs.existsSync(JOURNAL_FILE)) {
+        try { journal = JSON.parse(fs.readFileSync(JOURNAL_FILE, "utf8")); } catch (e) { journal = []; }
+      }
+      journal.push({
+        timestamp: new Date().toISOString(),
+        market: pos.marketSlug || "",
+        direction: pos.direction,
+        outcome: pos.outcome,
+        won,
+        strategy: pos.strategy || "UNKNOWN",
+        entryPrice: pos.entryPrice,
+        oppositePrice: oppositePrice || null,
+        combinedPrice: combinedPrice || null,
+        cost: pos.cost,
+        pnl: pos.pnl,
+        btcStart: pos.priceToBeat,
+        btcEnd: resolvedPrice,
+        movePct: movePct || null,
+        overreaction: wasOverreaction || false,
+        bullScore: pos.bullScore || 0,
+        bearScore: pos.bearScore || 0,
+        signals: pos.signals || [],
+        streak: this.recentOutcomes.slice(-10).join('')
+      });
+      fs.writeFileSync(JOURNAL_FILE, JSON.stringify(journal, null, 2), "utf8");
+    } catch (e) { /* ignore */ }
   }
 
   _ensureCsvHeader() {
     try {
       fs.mkdirSync(LOG_DIR, { recursive: true });
       if (!fs.existsSync(CSV_FILE)) {
-        const header = "timestamp,market,direction,outcome,won,entryPrice,oppositePrice,combinedPrice,cost,pnl,btcStart,btcEnd,movePct,overreaction,bullScore,bearScore,signals,streak\n";
+        const header = "timestamp,market,direction,outcome,won,strategy,entryPrice,oppositePrice,combinedPrice,cost,pnl,btcStart,btcEnd,movePct,overreaction,bullScore,bearScore,signals,streak\n";
         fs.writeFileSync(CSV_FILE, header, "utf8");
       }
     } catch (e) { /* ignore */ }
@@ -366,6 +487,7 @@ export class PositionTracker {
         pos.direction,
         pos.outcome,
         won ? "WIN" : "LOSS",
+        pos.strategy || "UNKNOWN",
         pos.entryPrice?.toFixed(3) || "",
         oppositePrice?.toFixed(3) || "",
         combinedPrice?.toFixed(3) || "",
@@ -378,7 +500,7 @@ export class PositionTracker {
         pos.bullScore || 0,
         pos.bearScore || 0,
         `"${(pos.signals || []).join('; ')}"`,
-        `"${this.recentOutcomes.slice(-5).join('')}"`
+        `"${this.recentOutcomes.slice(-10).join('')}"`
       ].join(",");
       fs.appendFileSync(CSV_FILE, row + "\n", "utf8");
     } catch (e) { /* ignore */ }
