@@ -55,14 +55,8 @@ export class TradingEngine {
     if (!prediction || !marketData) {
       return { shouldTrade: false, reason: "Missing prediction or market data" };
     }
-    
-    // Track if we're in the last minute of the candle
-    // If so, we'll use progressively looser criteria to ensure a trade happens
-    let isLastMinute = false;
-    let confidenceLevel = "high"; // high, medium, low
 
     // RULE #4: Enter early for best prices — minute 1 is fine
-    // But ensure we trade every candle by relaxing requirements in last minutes
     if (marketData.marketEndTime) {
       const msLeft = marketData.marketEndTime - now;
       const minLeft = msLeft / 60000;
@@ -71,16 +65,11 @@ export class TradingEngine {
       if (minLeft > 14) {
         return { shouldTrade: false, reason: `Too early (min ${candleMinute}/15) — waiting for candle start` };
       }
-      
-      // Track if we're in the last minutes of the candle
-      // We'll use progressively looser criteria to ensure a trade happens
-      if (minLeft < 3) {
-        isLastMinute = true;
-        confidenceLevel = minLeft < 1.5 ? "low" : "medium";
-        console.log(`[Timing] LAST MINUTES ALERT: ${minLeft.toFixed(1)}min left — using ${confidenceLevel} confidence to ensure trade`);
+      if (minLeft < 1) {
+        return { shouldTrade: false, reason: `Too late (min ${candleMinute}/15)` };
       }
       
-      console.log(`[Timing] Candle minute: ${candleMinute}/15 | ${minLeft.toFixed(1)} min left | Confidence: ${confidenceLevel}`);
+      console.log(`[Timing] Candle minute: ${candleMinute}/15 | ${minLeft.toFixed(1)} min left`);
     }
 
     // ═══════════════════════════════════════════════════════════════
@@ -119,87 +108,97 @@ export class TradingEngine {
     }
 
     // ─── STRATEGY 2: CHEAP TOKEN HARVESTING ────────────────────
-    // Buy cheap tokens ONLY when momentum is STRONGLY supporting the cheap side
-    // Old rule: "not against us" → still lost on flat/choppy markets
-    // New rule: momentum must be STRONGLY FOR us (delta + MACD + Heiken all agree)
-    const cheapThreshold = 0.20; // Even tighter — need VERY cheap for good R:R
-    const hasMomentumData = indicators.delta1m !== undefined && indicators.delta3m !== undefined;
+    // Buy cheap tokens when momentum supports the direction
+    // Need: delta1m + delta3m agree, OR MACD supports
+    const cheapThreshold = 0.30;
+    const hasMomentumData = indicators.delta1m !== undefined || indicators.macdHist !== undefined;
     
     if (hasMomentumData && upPrice && upPrice < cheapThreshold && upPrice > 0.08) {
-      // Buy cheap Up ONLY if momentum is STRONGLY bullish
-      const bullishMomentum = indicators.delta1m > 0 && indicators.delta3m > 0;
+      const deltasAgree = indicators.delta1m > 0 && indicators.delta3m > 0;
       const macdSupports = indicators.macdHist !== undefined && indicators.macdHist > 0;
-      const heikenSupports = indicators.heikenColor === "green";
-      const trendStrength = (indicators.delta1m || 0) + (indicators.delta3m || 0);
+      const momentumOK = deltasAgree || macdSupports;
+      // Block if momentum is strongly AGAINST us
+      const stronglyAgainst = (indicators.delta1m < 0 && indicators.delta3m < 0 && indicators.macdHist < 0);
       
-      // Need ALL momentum indicators to agree + strong trend
-      if (bullishMomentum && macdSupports && heikenSupports && trendStrength > 0.15) {
-        console.log(`[Strategy] 🎯 CHEAP UP: $${upPrice.toFixed(3)} < $${cheapThreshold} + STRONG BULL momentum (trend: ${trendStrength.toFixed(2)}%)`);
+      if (momentumOK && !stronglyAgainst) {
+        console.log(`[Strategy] 🎯 CHEAP UP: $${upPrice.toFixed(3)} < $${cheapThreshold} + momentum OK (deltas:${deltasAgree}, MACD:${macdSupports})`);
         return {
           shouldTrade: true,
           direction: "LONG",
           targetOutcome: "Up",
-          confidence: 70,
+          confidence: 65,
           edge: 0.50 - upPrice,
           marketPrice: upPrice,
-          modelProb: 0.60,
+          modelProb: 0.55,
           strategy: "CHEAP_TOKEN",
-          bullScore: 0, bearScore: 0, signals: [`CHEAP_UP:$${upPrice.toFixed(3)}`, `Δ1m:+`, `Δ3m:+`, `MACD:+`, `HA:green`, `trend:${trendStrength.toFixed(2)}%`],
-          reason: `CHEAP Up @ $${upPrice.toFixed(3)} (strong bullish momentum)`
+          bullScore: 0, bearScore: 0, signals: [`CHEAP_UP:$${upPrice.toFixed(3)}`, `deltas:${deltasAgree}`, `MACD:${macdSupports}`],
+          reason: `CHEAP Up @ $${upPrice.toFixed(3)} (momentum supports)`
         };
       } else {
-        console.log(`[Strategy] ⚠ CHEAP UP $${upPrice.toFixed(3)} BLOCKED — need ALL bullish: Δ1m(${indicators.delta1m?.toFixed(2)}), Δ3m(${indicators.delta3m?.toFixed(2)}), MACD(${indicators.macdHist?.toFixed(2)}), Heiken(${indicators.heikenColor}), trend(${trendStrength?.toFixed(2)}%)`);
+        console.log(`[Strategy] ⚠ CHEAP UP $${upPrice.toFixed(3)} BLOCKED — momentum against (Δ1m:${indicators.delta1m?.toFixed(2)}, Δ3m:${indicators.delta3m?.toFixed(2)}, MACD:${indicators.macdHist?.toFixed(2)})`);
       }
     }
     if (hasMomentumData && downPrice && downPrice < cheapThreshold && downPrice > 0.08) {
-      // Buy cheap Down ONLY if momentum is STRONGLY bearish
-      const bearishMomentum = indicators.delta1m < 0 && indicators.delta3m < 0;
+      const deltasAgree = indicators.delta1m < 0 && indicators.delta3m < 0;
       const macdSupports = indicators.macdHist !== undefined && indicators.macdHist < 0;
-      const heikenSupports = indicators.heikenColor === "red";
-      const trendStrength = Math.abs((indicators.delta1m || 0) + (indicators.delta3m || 0));
+      const momentumOK = deltasAgree || macdSupports;
+      const stronglyAgainst = (indicators.delta1m > 0 && indicators.delta3m > 0 && indicators.macdHist > 0);
       
-      // Need ALL momentum indicators to agree + strong trend
-      if (bearishMomentum && macdSupports && heikenSupports && trendStrength > 0.15) {
-        console.log(`[Strategy] 🎯 CHEAP DOWN: $${downPrice.toFixed(3)} < $${cheapThreshold} + STRONG BEAR momentum (trend: ${trendStrength.toFixed(2)}%)`);
+      if (momentumOK && !stronglyAgainst) {
+        console.log(`[Strategy] 🎯 CHEAP DOWN: $${downPrice.toFixed(3)} < $${cheapThreshold} + momentum OK (deltas:${deltasAgree}, MACD:${macdSupports})`);
         return {
           shouldTrade: true,
           direction: "SHORT",
           targetOutcome: "Down",
-          confidence: 70,
+          confidence: 65,
           edge: 0.50 - downPrice,
           marketPrice: downPrice,
-          modelProb: 0.60,
+          modelProb: 0.55,
           strategy: "CHEAP_TOKEN",
-          bullScore: 0, bearScore: 0, signals: [`CHEAP_DOWN:$${downPrice.toFixed(3)}`, `Δ1m:-`, `Δ3m:-`, `MACD:-`, `HA:red`, `trend:${trendStrength.toFixed(2)}%`],
-          reason: `CHEAP Down @ $${downPrice.toFixed(3)} (strong bearish momentum)`
+          bullScore: 0, bearScore: 0, signals: [`CHEAP_DOWN:$${downPrice.toFixed(3)}`, `deltas:${deltasAgree}`, `MACD:${macdSupports}`],
+          reason: `CHEAP Down @ $${downPrice.toFixed(3)} (momentum supports)`
         };
       } else {
-        console.log(`[Strategy] ⚠ CHEAP DOWN $${downPrice.toFixed(3)} BLOCKED — need ALL bearish: Δ1m(${indicators.delta1m?.toFixed(2)}), Δ3m(${indicators.delta3m?.toFixed(2)}), MACD(${indicators.macdHist?.toFixed(2)}), Heiken(${indicators.heikenColor}), trend(${trendStrength?.toFixed(2)}%)`);
+        console.log(`[Strategy] ⚠ CHEAP DOWN $${downPrice.toFixed(3)} BLOCKED — momentum against (Δ1m:${indicators.delta1m?.toFixed(2)}, Δ3m:${indicators.delta3m?.toFixed(2)}, MACD:${indicators.macdHist?.toFixed(2)})`);
       }
     }
 
-    // ─── STRATEGY 3: MEAN-REVERSION (DISABLED) ────────────────
-    // DISABLED: Mean-reversion is too risky on 15m BTC
-    // Even with both RSI extreme + MACD deceleration, trends often continue
-    // Last loss: BTC -0.51%, RSI 23, MACD decelerating, but trend continued
+    // ─── STRATEGY 3: MEAN-REVERSION (STRICT) ─────────────────
+    // Fade sharp moves ONLY when BOTH exhaustion signals confirm
+    // AND the fade token is cheap (good risk:reward)
     if (ptb && indicators.lastPrice) {
       const currentMove = ((indicators.lastPrice - ptb) / ptb) * 100;
-      const sharpMoveThreshold = 0.20;
+      const sharpMoveThreshold = 0.25; // 0.25% = ~$175 on $70k BTC
       
       if (Math.abs(currentMove) > sharpMoveThreshold) {
         const rsiExtreme = indicators.rsi !== undefined && indicators.rsi !== null &&
-          ((currentMove > 0 && indicators.rsi > 75) || (currentMove < 0 && indicators.rsi < 25));
+          ((currentMove > 0 && indicators.rsi > 72) || (currentMove < 0 && indicators.rsi < 28));
         const macdDecelerating = indicators.macdHistDelta !== undefined && indicators.macdHistDelta !== null &&
           ((currentMove > 0 && indicators.macdHistDelta < 0) || (currentMove < 0 && indicators.macdHistDelta > 0));
         
-        // Log but don't trade
         if (rsiExtreme && macdDecelerating) {
           const fadeDirection = currentMove > 0 ? "SHORT" : "LONG";
           const fadeOutcome = fadeDirection === "LONG" ? "Up" : "Down";
           const fadePrice = fadeDirection === "LONG" ? upPrice : downPrice;
           
-          console.log(`[Strategy] ⚠ MEAN-REVERSION DISABLED: BTC ${currentMove > 0 ? 'UP' : 'DOWN'} ${Math.abs(currentMove).toFixed(3)}% | RSI:${indicators.rsi?.toFixed(0)} | MACD decel: YES`);
-          console.log(`[Strategy] Would have faded with ${fadeOutcome} @ $${fadePrice?.toFixed(3)} but strategy is disabled (too risky)`);
+          if (fadePrice && fadePrice < 0.30) {
+            console.log(`[Strategy] 🔄 MEAN-REVERSION: BTC ${currentMove > 0 ? 'UP' : 'DOWN'} ${Math.abs(currentMove).toFixed(3)}% | RSI:${indicators.rsi?.toFixed(0)} | MACD decel: YES`);
+            console.log(`[Strategy] Fading with ${fadeOutcome} @ $${fadePrice.toFixed(3)} (BOTH exhaustion + cheap token)`);
+            return {
+              shouldTrade: true,
+              direction: fadeDirection,
+              targetOutcome: fadeOutcome,
+              confidence: 68,
+              edge: 0.50 - fadePrice,
+              marketPrice: fadePrice,
+              modelProb: 0.58,
+              strategy: "MEAN_REVERSION",
+              bullScore: 0, bearScore: 0, signals: [`FADE:move=${currentMove.toFixed(3)}%`, `RSI:${indicators.rsi?.toFixed(0)}`, `MACD:decel`],
+              reason: `FADE ${currentMove > 0 ? 'UP' : 'DOWN'} (${Math.abs(currentMove).toFixed(3)}%) + exhaustion → ${fadeOutcome} @ $${fadePrice.toFixed(3)}`
+            };
+          }
+        } else {
+          console.log(`[Strategy] ⚠ Sharp move ${currentMove.toFixed(3)}% but need BOTH exhaustion (RSI:${rsiExtreme}, MACD-decel:${macdDecelerating}) — NOT fading`);
         }
       }
     }
@@ -301,93 +300,64 @@ export class TradingEngine {
       return { shouldTrade: false, reason: "Invalid market price" };
     }
 
-    // Max price cap — lowered to 45¢
-    if (marketPrice > 0.45) {
-      console.log(`[Strategy] ⚠ Price too high ($${marketPrice.toFixed(3)} > $0.45) — SKIP`);
-      console.log(`[Strategy] ══════════════════════════════════════`);
-      return { shouldTrade: false, reason: `Price too high ($${marketPrice.toFixed(2)} > $0.45)` };
+    // Max price cap — 50¢ (above this, risk:reward is bad)
+    if (marketPrice > 0.50) {
+      // If price is too high on winning side, try the OTHER side (which is cheap)
+      const otherDirection = direction === "LONG" ? "SHORT" : "LONG";
+      const otherOutcome = otherDirection === "LONG" ? "Up" : "Down";
+      const otherPrice = otherDirection === "LONG" ? upPrice : downPrice;
+      
+      if (otherPrice && otherPrice < 0.50 && otherPrice > 0.08) {
+        // Switch to the cheaper side — better risk:reward
+        direction = otherDirection;
+        targetOutcome = otherOutcome;
+        marketPrice = otherPrice;
+        console.log(`[Strategy] 🔄 Winning side too expensive, switching to ${targetOutcome} @ $${marketPrice.toFixed(3)} (better R:R)`);
+      } else {
+        console.log(`[Strategy] ⚠ Both sides too expensive — SKIP`);
+        console.log(`[Strategy] ══════════════════════════════════════`);
+        return { shouldTrade: false, reason: `Both sides too expensive` };
+      }
     }
 
-    // ─── UNIVERSAL: NO major conflicts allowed at ANY price ──────
-    // Key insight: trades with conflicting major indicators lose ~50%
-    // To hit 75% WR, we MUST have all majors agreeing
-    if (majorConflict) {
+    // ─── CONFLICT FILTER: Only block for expensive tokens ──────
+    // Cheap tokens (<35¢) have good R:R even with some conflict
+    // Expensive tokens (>35¢) need majors aligned
+    if (majorConflict && marketPrice > 0.35) {
       const conflicting = [];
       if (macdDir !== 0 && macdDir !== winningDir) conflicting.push("MACD");
       if (vwapDir !== 0 && vwapDir !== winningDir) conflicting.push("VWAP");
       if (heikenDir !== 0 && heikenDir !== winningDir) conflicting.push("Heiken");
-      console.log(`[Strategy] ⚠ BLOCKED: ${conflicting.join(', ')} conflict — ALL majors must agree for 75% WR`);
+      console.log(`[Strategy] ⚠ CONFLICT at expensive price $${marketPrice.toFixed(3)}: ${conflicting.join(', ')} — SKIP`);
       console.log(`[Strategy] ══════════════════════════════════════`);
       return {
         shouldTrade: false,
-        reason: `Major conflict (${conflicting.join(', ')}) — need all majors aligned`
+        reason: `Major conflict (${conflicting.join(', ')}) at expensive price $${marketPrice.toFixed(2)}`
       };
     }
 
-    // Tiered score requirements based on price
+    // Tiered score requirements — achievable but still selective
     let requiredDiff;
-    if (marketPrice < 0.25) {
-      // Very cheap: great risk:reward, but still need decent signal
-      requiredDiff = 6;
-    } else if (marketPrice < 0.35) {
-      // Medium: need strong signal
-      requiredDiff = 7;
+    if (marketPrice < 0.30) {
+      requiredDiff = 3; // Cheap: good R:R, moderate signal OK
+    } else if (marketPrice < 0.40) {
+      requiredDiff = 4; // Medium: need decent signal
     } else {
-      // Expensive (35-45¢): need overwhelming signal
-      requiredDiff = 8;
+      requiredDiff = 5; // Expensive: need strong signal
     }
 
-    // For high confidence, require full score diff
-    // For medium/low confidence (last minutes), relax requirements
-    const adjustedRequiredDiff = confidenceLevel === "high" ? requiredDiff :
-                                confidenceLevel === "medium" ? Math.max(requiredDiff - 2, 3) : 
-                                Math.max(requiredDiff - 4, 2);
-    
-    if (scoreDiff < adjustedRequiredDiff) {
-      // If we're in the last minute, check if we have ANY signal at all
-      if (isLastMinute && scoreDiff >= 1) {
-        console.log(`[Strategy] ⚠ LAST MINUTE FALLBACK: Score diff ${scoreDiff} < ${requiredDiff} but we need to trade`);
-      } else {
-        console.log(`[Strategy] ⚠ Score diff ${scoreDiff} < ${adjustedRequiredDiff} (required for $${marketPrice.toFixed(2)} tier, confidence: ${confidenceLevel}) — SKIP`);
-        console.log(`[Strategy] ══════════════════════════════════════`);
-        
-        // If we're in the last minute and have no signal, try a coin-flip on the cheaper side
-        if (isLastMinute && confidenceLevel === "low") {
-          // LAST RESORT: If we're in the final minute with no signal, take the cheaper side
-          const cheaperSide = upPrice <= downPrice ? "Up" : "Down";
-          const cheaperPrice = Math.min(upPrice, downPrice);
-          
-          // Only do this for reasonably priced tokens
-          if (cheaperPrice < 0.40) {
-            console.log(`[Strategy] ⚠ LAST MINUTE FALLBACK: No signal but taking cheaper side ${cheaperSide} @ $${cheaperPrice.toFixed(3)}`);
-            return {
-              shouldTrade: true,
-              direction: cheaperSide === "Up" ? "LONG" : "SHORT",
-              targetOutcome: cheaperSide,
-              confidence: 55,
-              edge: 0.10,
-              marketPrice: cheaperPrice,
-              modelProb: 0.55,
-              strategy: "LAST_MINUTE_FALLBACK",
-              bullScore: 0, bearScore: 0, signals: [`FALLBACK:cheaper_side`],
-              reason: `LAST MINUTE FALLBACK: Taking cheaper side ${cheaperSide} @ $${cheaperPrice.toFixed(3)}`
-            };
-          }
-        }
-        
-        return {
-          shouldTrade: false,
-          reason: `Weak signal for price tier (diff ${scoreDiff} < ${adjustedRequiredDiff} @ $${marketPrice.toFixed(2)})`
-        };
-      }
+    if (scoreDiff < requiredDiff) {
+      console.log(`[Strategy] ⚠ Score diff ${scoreDiff} < ${requiredDiff} for $${marketPrice.toFixed(2)} tier — SKIP`);
+      console.log(`[Strategy] ══════════════════════════════════════`);
+      return {
+        shouldTrade: false,
+        reason: `Weak signal (diff ${scoreDiff} < ${requiredDiff} @ $${marketPrice.toFixed(2)})`
+      };
     }
 
-    // Spread check - only apply for high confidence trades
-    if (confidenceLevel === "high" && marketData.spread !== undefined && marketData.spread !== null && marketData.spread > 0.05) {
-      if (!isLastMinute) {
-        return { shouldTrade: false, reason: `Spread too wide (${(marketData.spread * 100).toFixed(1)}% > 5%)` };
-      }
-      console.log(`[Strategy] ⚠ Wide spread but in last minutes - proceeding anyway to ensure trade`);
+    // Spread check
+    if (marketData.spread !== undefined && marketData.spread !== null && marketData.spread > 0.08) {
+      return { shouldTrade: false, reason: `Spread too wide (${(marketData.spread * 100).toFixed(1)}% > 8%)` };
     }
 
     const indicatorConf = (Math.max(bullScore, bearScore) / (bullScore + bearScore)) * 100;
