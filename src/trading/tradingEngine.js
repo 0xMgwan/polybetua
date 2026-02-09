@@ -55,20 +55,32 @@ export class TradingEngine {
     if (!prediction || !marketData) {
       return { shouldTrade: false, reason: "Missing prediction or market data" };
     }
+    
+    // Track if we're in the last minute of the candle
+    // If so, we'll use progressively looser criteria to ensure a trade happens
+    let isLastMinute = false;
+    let confidenceLevel = "high"; // high, medium, low
 
     // RULE #4: Enter early for best prices — minute 1 is fine
-    // Early entry = cheapest tokens = biggest potential wins
+    // But ensure we trade every candle by relaxing requirements in last minutes
     if (marketData.marketEndTime) {
       const msLeft = marketData.marketEndTime - now;
       const minLeft = msLeft / 60000;
       const candleMinute = Math.floor(15 - minLeft);
+      
       if (minLeft > 14) {
         return { shouldTrade: false, reason: `Too early (min ${candleMinute}/15) — waiting for candle start` };
       }
-      if (minLeft < 1) {
-        return { shouldTrade: false, reason: `Too late (min ${candleMinute}/15)` };
+      
+      // Track if we're in the last minutes of the candle
+      // We'll use progressively looser criteria to ensure a trade happens
+      if (minLeft < 3) {
+        isLastMinute = true;
+        confidenceLevel = minLeft < 1.5 ? "low" : "medium";
+        console.log(`[Timing] LAST MINUTES ALERT: ${minLeft.toFixed(1)}min left — using ${confidenceLevel} confidence to ensure trade`);
       }
-      console.log(`[Timing] Candle minute: ${candleMinute}/15 | ${minLeft.toFixed(1)} min left`);
+      
+      console.log(`[Timing] Candle minute: ${candleMinute}/15 | ${minLeft.toFixed(1)} min left | Confidence: ${confidenceLevel}`);
     }
 
     // ═══════════════════════════════════════════════════════════════
@@ -325,18 +337,57 @@ export class TradingEngine {
       requiredDiff = 8;
     }
 
-    if (scoreDiff < requiredDiff) {
-      console.log(`[Strategy] ⚠ Score diff ${scoreDiff} < ${requiredDiff} (required for $${marketPrice.toFixed(2)} price tier) — SKIP`);
-      console.log(`[Strategy] ══════════════════════════════════════`);
-      return {
-        shouldTrade: false,
-        reason: `Weak signal for price tier (diff ${scoreDiff} < ${requiredDiff} @ $${marketPrice.toFixed(2)})`
-      };
+    // For high confidence, require full score diff
+    // For medium/low confidence (last minutes), relax requirements
+    const adjustedRequiredDiff = confidenceLevel === "high" ? requiredDiff :
+                                confidenceLevel === "medium" ? Math.max(requiredDiff - 2, 3) : 
+                                Math.max(requiredDiff - 4, 2);
+    
+    if (scoreDiff < adjustedRequiredDiff) {
+      // If we're in the last minute, check if we have ANY signal at all
+      if (isLastMinute && scoreDiff >= 1) {
+        console.log(`[Strategy] ⚠ LAST MINUTE FALLBACK: Score diff ${scoreDiff} < ${requiredDiff} but we need to trade`);
+      } else {
+        console.log(`[Strategy] ⚠ Score diff ${scoreDiff} < ${adjustedRequiredDiff} (required for $${marketPrice.toFixed(2)} tier, confidence: ${confidenceLevel}) — SKIP`);
+        console.log(`[Strategy] ══════════════════════════════════════`);
+        
+        // If we're in the last minute and have no signal, try a coin-flip on the cheaper side
+        if (isLastMinute && confidenceLevel === "low") {
+          // LAST RESORT: If we're in the final minute with no signal, take the cheaper side
+          const cheaperSide = upPrice <= downPrice ? "Up" : "Down";
+          const cheaperPrice = Math.min(upPrice, downPrice);
+          
+          // Only do this for reasonably priced tokens
+          if (cheaperPrice < 0.40) {
+            console.log(`[Strategy] ⚠ LAST MINUTE FALLBACK: No signal but taking cheaper side ${cheaperSide} @ $${cheaperPrice.toFixed(3)}`);
+            return {
+              shouldTrade: true,
+              direction: cheaperSide === "Up" ? "LONG" : "SHORT",
+              targetOutcome: cheaperSide,
+              confidence: 55,
+              edge: 0.10,
+              marketPrice: cheaperPrice,
+              modelProb: 0.55,
+              strategy: "LAST_MINUTE_FALLBACK",
+              bullScore: 0, bearScore: 0, signals: [`FALLBACK:cheaper_side`],
+              reason: `LAST MINUTE FALLBACK: Taking cheaper side ${cheaperSide} @ $${cheaperPrice.toFixed(3)}`
+            };
+          }
+        }
+        
+        return {
+          shouldTrade: false,
+          reason: `Weak signal for price tier (diff ${scoreDiff} < ${adjustedRequiredDiff} @ $${marketPrice.toFixed(2)})`
+        };
+      }
     }
 
-    // Spread check
-    if (marketData.spread !== undefined && marketData.spread !== null && marketData.spread > 0.05) {
-      return { shouldTrade: false, reason: `Spread too wide (${(marketData.spread * 100).toFixed(1)}% > 5%)` };
+    // Spread check - only apply for high confidence trades
+    if (confidenceLevel === "high" && marketData.spread !== undefined && marketData.spread !== null && marketData.spread > 0.05) {
+      if (!isLastMinute) {
+        return { shouldTrade: false, reason: `Spread too wide (${(marketData.spread * 100).toFixed(1)}% > 5%)` };
+      }
+      console.log(`[Strategy] ⚠ Wide spread but in last minutes - proceeding anyway to ensure trade`);
     }
 
     const indicatorConf = (Math.max(bullScore, bearScore) / (bullScore + bearScore)) * 100;
