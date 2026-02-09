@@ -15,6 +15,8 @@ export class PositionTracker {
     this.totalCost = 0;
     this.totalReturn = 0;
     this.recentOutcomes = [];  // Track last N outcomes for streak analysis
+    this.pausedAt = null;      // When trading was paused (3+ losses)
+    this.pauseReason = null;   // Why trading was paused
     
     // Load saved P&L data
     this._loadState();
@@ -238,12 +240,45 @@ export class PositionTracker {
   // Check if we should stop trading (circuit breaker) - SURVIVAL MODE
   shouldStopTrading() {
     const stats = this.getStats();
+    const now = Date.now();
+    const PAUSE_DURATION = 30 * 60 * 1000; // 30 minutes
     
-    // Stop if 3+ consecutive losses - something is wrong with the signal
+    // ─── LOSS-STREAK PAUSE ───────────────────────────────────────
+    // Pause for 30 min after 3+ consecutive losses
+    // Resume early if a win breaks the streak
     if (stats.streakType === "LOSS" && stats.currentStreak >= 3) {
-      return { stop: true, reason: `${stats.currentStreak} consecutive losses - STOP` };
+      // First time hitting 3 losses — start pause
+      if (!this.pausedAt) {
+        this.pausedAt = now;
+        this.pauseReason = `${stats.currentStreak} consecutive losses`;
+        console.log(`[Pause] ⏸ Trading paused: ${this.pauseReason} | Will resume in 30 min or on next WIN`);
+        return { stop: true, reason: `${this.pauseReason} (paused, will resume in 30 min or on WIN)` };
+      }
+      
+      // Already paused — check if 30 min has passed
+      const pausedFor = now - this.pausedAt;
+      if (pausedFor >= PAUSE_DURATION) {
+        console.log(`[Pause] ▶ Auto-resuming after 30 min pause`);
+        this.pausedAt = null;
+        this.pauseReason = null;
+        return { stop: false };
+      }
+      
+      // Still within 30 min pause window
+      const minLeft = Math.ceil((PAUSE_DURATION - pausedFor) / 60000);
+      return { stop: true, reason: `Paused (${minLeft} min left) | ${this.pauseReason}` };
     }
     
+    // ─── RESUME ON WIN ───────────────────────────────────────────
+    // If we were paused but now have a win (streak broken), resume immediately
+    if (this.pausedAt && (stats.streakType === "WIN" || stats.currentStreak === 1)) {
+      console.log(`[Pause] ▶ Resuming early: WIN broke the loss streak!`);
+      this.pausedAt = null;
+      this.pauseReason = null;
+      return { stop: false };
+    }
+    
+    // ─── OTHER CIRCUIT BREAKERS ──────────────────────────────────
     // Stop if total P&L is worse than -$8 (16% of $50)
     if (stats.totalPnl < -8) {
       return { stop: true, reason: `P&L $${stats.totalPnl.toFixed(2)} hit max drawdown (-$8)` };
