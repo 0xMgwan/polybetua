@@ -1,0 +1,15 @@
+[variables]
+# Unset proxy during build so Nix can download packages directly
+HTTPS_PROXY = ""
+HTTP_PROXY = ""
+https_proxy = ""
+http_proxy = ""
+
+[phases.setup]
+nixPkgs = ["nodejs_20"]
+
+[phases.install]
+cmds = ["npm ci || npm install"]
+
+[start]
+cmd = "node src/index.js"
