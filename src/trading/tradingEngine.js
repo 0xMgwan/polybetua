@@ -45,14 +45,7 @@ export class TradingEngine {
       return { shouldTrade: false, reason: `Hourly limit reached (${this.config.maxTradesPerHour} trades/hr)` };
     }
 
-    // SURVIVAL RULE #3: Cooldown between trades
     const now = Date.now();
-    if (now - this.lastTradeTime < this.config.cooldownMs) {
-      return { 
-        shouldTrade: false, 
-        reason: `Cooldown (${Math.floor((this.config.cooldownMs - (now - this.lastTradeTime)) / 1000)}s)` 
-      };
-    }
 
     // CIRCUIT BREAKER: Stop if total exposure gets too high
     const totalExposure = this.positionTracker.openPositions.reduce((sum, pos) => sum + pos.cost, 0);
