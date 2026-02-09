@@ -56,14 +56,14 @@ export class TradingEngine {
       return { shouldTrade: false, reason: "Missing prediction or market data" };
     }
 
-    // RULE #4: Wait for indicators to stabilize, then trade
-    // Minutes 1-2 have noisy indicators — wait until minute 3+
+    // RULE #4: Enter early for best prices — minute 1 is fine
+    // Early entry = cheapest tokens = biggest potential wins
     if (marketData.marketEndTime) {
       const msLeft = marketData.marketEndTime - now;
       const minLeft = msLeft / 60000;
       const candleMinute = Math.floor(15 - minLeft);
-      if (minLeft > 12) {
-        return { shouldTrade: false, reason: `Too early (min ${candleMinute}/15) — waiting for indicators to stabilize` };
+      if (minLeft > 14) {
+        return { shouldTrade: false, reason: `Too early (min ${candleMinute}/15) — waiting for candle start` };
       }
       if (minLeft < 1) {
         return { shouldTrade: false, reason: `Too late (min ${candleMinute}/15)` };
