@@ -203,14 +203,20 @@ export class TradingEngine {
 
     // ─── STRATEGY 4: STRONG MOMENTUM (indicator consensus) ─────
     // Only take momentum trades when indicators OVERWHELMINGLY agree
+    // Key learning: losses come from expensive tokens with conflicting signals
     let bullScore = 0;
     let bearScore = 0;
     const signals = [];
 
+    // Track individual major indicator directions for conflict detection
+    let macdDir = 0;   // +1 bull, -1 bear, 0 neutral
+    let vwapDir = 0;
+    let heikenDir = 0;
+
     // MACD Histogram (weight: 3)
     if (indicators.macdHist !== undefined && indicators.macdHist !== null) {
-      if (indicators.macdHist > 0) { bullScore += 3; signals.push(`MACD:BULL(+3)`); }
-      else if (indicators.macdHist < 0) { bearScore += 3; signals.push(`MACD:BEAR(+3)`); }
+      if (indicators.macdHist > 0) { bullScore += 3; macdDir = 1; signals.push(`MACD:BULL(+3)`); }
+      else if (indicators.macdHist < 0) { bearScore += 3; macdDir = -1; signals.push(`MACD:BEAR(+3)`); }
       if (indicators.macdHistDelta !== undefined && indicators.macdHistDelta !== null) {
         if (indicators.macdHistDelta > 0 && indicators.macdHist > 0) { bullScore += 1; signals.push(`MACD-exp:BULL(+1)`); }
         else if (indicators.macdHistDelta < 0 && indicators.macdHist < 0) { bearScore += 1; signals.push(`MACD-exp:BEAR(+1)`); }
@@ -219,8 +225,8 @@ export class TradingEngine {
 
     // Price vs VWAP (weight: 2)
     if (indicators.priceVsVwap !== undefined) {
-      if (indicators.priceVsVwap > 0) { bullScore += 2; signals.push(`VWAP:BULL(+2)`); }
-      else if (indicators.priceVsVwap < 0) { bearScore += 2; signals.push(`VWAP:BEAR(+2)`); }
+      if (indicators.priceVsVwap > 0) { bullScore += 2; vwapDir = 1; signals.push(`VWAP:BULL(+2)`); }
+      else if (indicators.priceVsVwap < 0) { bearScore += 2; vwapDir = -1; signals.push(`VWAP:BEAR(+2)`); }
     }
 
     // VWAP Slope (weight: 2)
@@ -232,10 +238,10 @@ export class TradingEngine {
     // Heiken Ashi (weight: 2, +1 streak bonus)
     if (indicators.heikenColor !== undefined && indicators.heikenColor !== null) {
       if (indicators.heikenColor === "green") {
-        bullScore += 2; signals.push(`HA:BULL(+2)`);
+        bullScore += 2; heikenDir = 1; signals.push(`HA:BULL(+2)`);
         if (indicators.heikenCount >= 3) { bullScore += 1; signals.push(`HA-streak(${indicators.heikenCount}):+1`); }
       } else if (indicators.heikenColor === "red") {
-        bearScore += 2; signals.push(`HA:BEAR(+2)`);
+        bearScore += 2; heikenDir = -1; signals.push(`HA:BEAR(+2)`);
         if (indicators.heikenCount >= 3) { bearScore += 1; signals.push(`HA-streak(${indicators.heikenCount}):+1`); }
       }
     }
@@ -260,21 +266,31 @@ export class TradingEngine {
     }
 
     const scoreDiff = Math.abs(bullScore - bearScore);
+    const winningDir = bullScore > bearScore ? 1 : -1; // +1 = bull, -1 = bear
     console.log(`[Strategy] BULL: ${bullScore} | BEAR: ${bearScore} | Diff: ${scoreDiff}`);
     console.log(`[Strategy] Signals: ${signals.join(', ')}`);
 
-    // STRICT: Need 5+ point advantage for momentum trades (was 3 — too loose)
-    const minScoreDiff = 5;
-    if (scoreDiff < minScoreDiff) {
-      console.log(`[Strategy] ⚠ Momentum too weak (diff ${scoreDiff} < ${minScoreDiff}) — SKIP`);
-      console.log(`[Strategy] ══════════════════════════════════════`);
-      return {
-        shouldTrade: false,
-        reason: `Weak momentum (BULL:${bullScore} vs BEAR:${bearScore}, need ${minScoreDiff}+ diff)`
-      };
+    // ─── CONFLICT DETECTION ──────────────────────────────────────
+    // Check if any major indicator (MACD, VWAP, Heiken) disagrees with direction
+    const majorConflict = (macdDir !== 0 && macdDir !== winningDir) ||
+                          (vwapDir !== 0 && vwapDir !== winningDir) ||
+                          (heikenDir !== 0 && heikenDir !== winningDir);
+    const majorsAligned = (macdDir === 0 || macdDir === winningDir) &&
+                          (vwapDir === 0 || vwapDir === winningDir) &&
+                          (heikenDir === 0 || heikenDir === winningDir);
+
+    if (majorConflict) {
+      const conflicting = [];
+      if (macdDir !== 0 && macdDir !== winningDir) conflicting.push("MACD");
+      if (vwapDir !== 0 && vwapDir !== winningDir) conflicting.push("VWAP");
+      if (heikenDir !== 0 && heikenDir !== winningDir) conflicting.push("Heiken");
+      console.log(`[Strategy] ⚠ CONFLICT: ${conflicting.join(', ')} disagree with ${winningDir > 0 ? 'BULL' : 'BEAR'} direction`);
     }
 
-    let direction = bullScore > bearScore ? "LONG" : "SHORT";
+    // ─── PRICE-TIERED THRESHOLDS ─────────────────────────────────
+    // Cheaper tokens = more forgiving (good risk:reward even on coin-flip)
+    // Expensive tokens = need much stronger signal
+    let direction = winningDir > 0 ? "LONG" : "SHORT";
     let targetOutcome = direction === "LONG" ? "Up" : "Down";
     let marketPrice = direction === "LONG" ? upPrice : downPrice;
 
@@ -282,11 +298,46 @@ export class TradingEngine {
       return { shouldTrade: false, reason: "Invalid market price" };
     }
 
-    // Only buy tokens under 52¢ for momentum trades (stricter than other strategies)
-    if (marketPrice > 0.52) {
-      console.log(`[Strategy] ⚠ Price too high for momentum ($${marketPrice.toFixed(3)} > $0.52) — SKIP`);
+    // Max price cap
+    if (marketPrice > 0.48) {
+      console.log(`[Strategy] ⚠ Price too high ($${marketPrice.toFixed(3)} > $0.48) — SKIP`);
       console.log(`[Strategy] ══════════════════════════════════════`);
-      return { shouldTrade: false, reason: `Momentum price too high ($${marketPrice.toFixed(2)} > $0.52)` };
+      return { shouldTrade: false, reason: `Price too high ($${marketPrice.toFixed(2)} > $0.48)` };
+    }
+
+    // Tiered requirements based on price
+    let requiredDiff;
+    let requireMajorsAligned;
+    if (marketPrice < 0.30) {
+      // Very cheap: good risk:reward, moderate signal OK
+      requiredDiff = 4;
+      requireMajorsAligned = false;
+    } else if (marketPrice < 0.40) {
+      // Medium: need solid signal
+      requiredDiff = 6;
+      requireMajorsAligned = false;
+    } else {
+      // Expensive (40-48¢): need overwhelming signal + NO conflicts
+      requiredDiff = 7;
+      requireMajorsAligned = true;
+    }
+
+    if (scoreDiff < requiredDiff) {
+      console.log(`[Strategy] ⚠ Score diff ${scoreDiff} < ${requiredDiff} (required for $${marketPrice.toFixed(2)} price tier) — SKIP`);
+      console.log(`[Strategy] ══════════════════════════════════════`);
+      return {
+        shouldTrade: false,
+        reason: `Weak signal for price tier (diff ${scoreDiff} < ${requiredDiff} @ $${marketPrice.toFixed(2)})`
+      };
+    }
+
+    if (requireMajorsAligned && !majorsAligned) {
+      console.log(`[Strategy] ⚠ Major indicator conflict at $${marketPrice.toFixed(3)} — too risky, SKIP`);
+      console.log(`[Strategy] ══════════════════════════════════════`);
+      return {
+        shouldTrade: false,
+        reason: `Major conflict at expensive price ($${marketPrice.toFixed(2)}) — MACD/VWAP/Heiken must all agree`
+      };
     }
 
     // Spread check
@@ -295,7 +346,8 @@ export class TradingEngine {
     }
 
     const indicatorConf = (Math.max(bullScore, bearScore) / (bullScore + bearScore)) * 100;
-    console.log(`[Strategy] ✅ MOMENTUM: ${direction} ${targetOutcome} @ $${marketPrice.toFixed(3)} | Conf: ${indicatorConf.toFixed(0)}%`);
+    const priceTier = marketPrice < 0.30 ? "CHEAP" : marketPrice < 0.40 ? "MID" : "PREMIUM";
+    console.log(`[Strategy] ✅ MOMENTUM [${priceTier}]: ${direction} ${targetOutcome} @ $${marketPrice.toFixed(3)} | Diff: ${scoreDiff}/${requiredDiff} | Conflicts: ${majorConflict ? 'YES' : 'NONE'}`);
     console.log(`[Strategy] ══════════════════════════════════════`);
 
     return {
@@ -306,9 +358,9 @@ export class TradingEngine {
       edge: Math.max((indicatorConf / 100) - marketPrice, 0.01),
       marketPrice,
       modelProb: indicatorConf / 100,
-      strategy: "MOMENTUM",
+      strategy: `MOMENTUM_${priceTier}`,
       bullScore, bearScore, signals,
-      reason: `MOMENTUM ${direction} ${bullScore}v${bearScore} @ $${marketPrice.toFixed(2)}`
+      reason: `MOMENTUM[${priceTier}] ${direction} ${bullScore}v${bearScore} @ $${marketPrice.toFixed(2)}`
     };
   }
 
