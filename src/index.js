@@ -820,44 +820,56 @@ async function main() {
       if (tradingStatus?.enabled) {
         const stats = getTradingStats();
         const statusColor = tradingStatus.dryRun ? ANSI.yellow : ANSI.green;
-        const statusText = tradingStatus.dryRun ? "DRY RUN" : "BALANCED MODE";
-        tradingLines.push(kv("TRADING:", `${statusColor}${statusText}${ANSI.reset} ${ANSI.dim}($5 max/trade)${ANSI.reset}`));
+        const statusText = tradingStatus.dryRun ? "DRY RUN" : "PAIR TRADING";
+        tradingLines.push(kv("TRADING:", `${statusColor}${statusText}${ANSI.reset} ${ANSI.dim}($2/buy, $8/window)${ANSI.reset}`));
         
         if (stats) {
           // P&L Display
           if (stats.pnl) {
             const pnl = stats.pnl;
-            
-            // Total P&L (most important - show first)
             const pnlColor = pnl.totalPnl >= 0 ? ANSI.green : ANSI.red;
             const pnlSign = pnl.totalPnl >= 0 ? "+" : "";
             tradingLines.push(kv("P&L:", `${pnlColor}${pnlSign}$${pnl.totalPnl.toFixed(2)}${ANSI.reset}`));
-            
-            // Win/Loss record
-            const winColor = pnl.wins > 0 ? ANSI.green : ANSI.gray;
-            const lossColor = pnl.losses > 0 ? ANSI.red : ANSI.gray;
-            tradingLines.push(kv("Record:", `${winColor}${pnl.wins}W${ANSI.reset} / ${lossColor}${pnl.losses}L${ANSI.reset}${pnl.totalTrades > 0 ? ` (${pnl.winRate.toFixed(0)}%)` : ""}`));
-            
-            // Streak
-            if (pnl.currentStreak > 0 && pnl.streakType) {
-              const streakColor = pnl.streakType === "WIN" ? ANSI.green : ANSI.red;
-              tradingLines.push(kv("Streak:", `${streakColor}${pnl.currentStreak}x ${pnl.streakType}${ANSI.reset}`));
-            }
-            
-            // Open positions
-            if (pnl.openPositions > 0) {
-              tradingLines.push(kv("Open Pos:", `${ANSI.yellow}${pnl.openPositions} awaiting resolution${ANSI.reset}`));
-            }
           }
           
-          // Rate limits
-          tradingLines.push(kv("Trades/Hr:", `${stats.tradesThisHour ?? 0}/${CONFIG.trading.maxTradesPerHour ?? 4} | Markets: ${stats.tradedMarkets ?? 0}`));
+          // Pair Window Display (the key info)
+          const pw = stats.pairWindow;
+          if (pw) {
+            const upStr = `${ANSI.green}${pw.qtyUp} Up ($${pw.costUp.toFixed(2)})${ANSI.reset}`;
+            const downStr = `${ANSI.red}${pw.qtyDown} Down ($${pw.costDown.toFixed(2)})${ANSI.reset}`;
+            tradingLines.push(kv("Window:", `${upStr} | ${downStr}`));
+            tradingLines.push(kv("Spent:", `$${pw.totalSpent.toFixed(2)} / $8.00 | Buys: ${pw.buys}`));
+            
+            if (pw.pairCost !== null) {
+              const pcColor = pw.pairCost < 1.0 ? ANSI.green : ANSI.red;
+              const profitStr = pw.pairCost < 1.0 
+                ? `${ANSI.green}+$${((1.0 - pw.pairCost) * pw.pairs).toFixed(2)} locked${ANSI.reset}`
+                : `${ANSI.red}need cheaper buys${ANSI.reset}`;
+              tradingLines.push(kv("Pair Cost:", `${pcColor}$${pw.pairCost.toFixed(3)}${ANSI.reset} | Pairs: ${pw.pairs} | ${profitStr}`));
+            } else {
+              tradingLines.push(kv("Pair Cost:", `${ANSI.yellow}need both sides${ANSI.reset}`));
+            }
+            
+            if (pw.locked) {
+              tradingLines.push(kv("STATUS:", `${ANSI.green}🔒 PROFIT LOCKED${ANSI.reset}`));
+            }
+          } else {
+            tradingLines.push(kv("Window:", `${ANSI.dim}waiting for cheap prices...${ANSI.reset}`));
+          }
+          
+          // Windows completed
+          tradingLines.push(kv("Windows:", `${stats.windowsCompleted ?? 0} completed | ${stats.tradesThisHour ?? 0} buys/hr`));
+          
+          // Open positions
+          if (stats.pnl?.openPositions > 0) {
+            tradingLines.push(kv("Open Pos:", `${ANSI.yellow}${stats.pnl.openPositions} awaiting resolution${ANSI.reset}`));
+          }
         }
         
         if (tradeResult) {
           if (tradeResult.traded) {
-            const tradeColor = tradeResult.signal?.direction === "LONG" ? ANSI.green : ANSI.red;
-            tradingLines.push(kv("EXECUTED:", `${tradeColor}${tradeResult.reason}${ANSI.reset}`));
+            const tradeColor = tradeResult.signal?.targetOutcome === "Up" ? ANSI.green : ANSI.red;
+            tradingLines.push(kv("LAST BUY:", `${tradeColor}${tradeResult.reason}${ANSI.reset}`));
           } else if (tradeResult.reason) {
             tradingLines.push(kv("Status:", `${ANSI.dim}${tradeResult.reason}${ANSI.reset}`));
           }
