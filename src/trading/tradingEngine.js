@@ -35,7 +35,8 @@ export class TradingEngine {
     this.IDEAL_THRESHOLD = 0.28;     // Ideal entry: ≤ 28¢
     this.MAX_WINDOW_SPEND = 5;       // Max $5 per window (split across buys)
     this.BUY_SIZE_DOLLARS = 2;       // $2 per individual buy
-    this.MIN_BUY_COOLDOWN = 15000;   // 15s between buys (same side)
+    this.MIN_BUY_COOLDOWN = 60000;   // 60s between buys (same side) — give other side time to get cheap
+    this.MAX_SINGLE_SIDE = 3;        // Max $3 on one side before other side has ANY buys
     this.PAIR_COST_TARGET = 0.985;   // Target: avg pair cost ≤ 98.5¢
     
     this.lastUpBuyTime = 0;
@@ -175,8 +176,6 @@ export class TradingEngine {
     // Find which side(s) are cheap enough to buy
     const upCheap = upPrice <= this.CHEAP_THRESHOLD && upPrice > 0.05;
     const downCheap = downPrice <= this.CHEAP_THRESHOLD && downPrice > 0.05;
-    const upIdeal = upPrice <= this.IDEAL_THRESHOLD;
-    const downIdeal = downPrice <= this.IDEAL_THRESHOLD;
 
     if (!upCheap && !downCheap) {
       console.log(`[PairTrade] ⚠ Neither side cheap enough (Up $${upPrice.toFixed(3)}, Down $${downPrice.toFixed(3)} > $${this.CHEAP_THRESHOLD})`);
@@ -184,10 +183,28 @@ export class TradingEngine {
       return { shouldTrade: false, reason: `No cheap side (Up $${upPrice.toFixed(2)}, Down $${downPrice.toFixed(2)} > $${this.CHEAP_THRESHOLD})` };
     }
 
+    // ─── SINGLE-SIDE CAP ──────────────────────────────────────
+    // CRITICAL: Don't keep buying one side without the other.
+    // Max $3 on one side before the other side has ANY position.
+    // This prevents the "64 Down, 0 Up" problem.
+    const upMaxedOut = window.costUp >= this.MAX_SINGLE_SIDE && window.qtyDown === 0;
+    const downMaxedOut = window.costDown >= this.MAX_SINGLE_SIDE && window.qtyUp === 0;
+
+    if (upMaxedOut && !downCheap) {
+      console.log(`[PairTrade] ⚠ Up maxed ($${window.costUp.toFixed(2)}) but Down not cheap ($${downPrice.toFixed(3)}) — waiting for Down to dip`);
+      console.log(`[PairTrade] ══════════════════════════════════════`);
+      return { shouldTrade: false, reason: `Up side maxed ($${window.costUp.toFixed(2)}), waiting for Down ≤$${this.CHEAP_THRESHOLD}` };
+    }
+    if (downMaxedOut && !upCheap) {
+      console.log(`[PairTrade] ⚠ Down maxed ($${window.costDown.toFixed(2)}) but Up not cheap ($${upPrice.toFixed(3)}) — waiting for Up to dip`);
+      console.log(`[PairTrade] ══════════════════════════════════════`);
+      return { shouldTrade: false, reason: `Down side maxed ($${window.costDown.toFixed(2)}), waiting for Up ≤$${this.CHEAP_THRESHOLD}` };
+    }
+
     // Decide which side to buy:
-    // Priority 1: Buy the side we have LESS of (balance the pair)
-    // Priority 2: Buy the CHEAPER side
-    // Priority 3: Buy the side at ideal price even if we have more
+    // Priority 1: Buy the side we have NONE of (must balance)
+    // Priority 2: Buy the side we have LESS of
+    // Priority 3: Buy the CHEAPER side
     let buyOutcome = null;
     let buyPrice = null;
     let buyReason = "";
@@ -196,7 +213,16 @@ export class TradingEngine {
     const upCooldownOk = (now - this.lastUpBuyTime) >= this.MIN_BUY_COOLDOWN;
     const downCooldownOk = (now - this.lastDownBuyTime) >= this.MIN_BUY_COOLDOWN;
 
-    if (upCheap && downCheap) {
+    // Force buy the missing side if we have one side already
+    if (window.qtyUp > 0 && window.qtyDown === 0 && downCheap && downCooldownOk) {
+      buyOutcome = "Down";
+      buyPrice = downPrice;
+      buyReason = `MUST BALANCE: have Up but no Down`;
+    } else if (window.qtyDown > 0 && window.qtyUp === 0 && upCheap && upCooldownOk) {
+      buyOutcome = "Up";
+      buyPrice = upPrice;
+      buyReason = `MUST BALANCE: have Down but no Up`;
+    } else if (upCheap && downCheap) {
       // Both cheap — buy the side we have less of
       if (window.qtyUp <= window.qtyDown && upCooldownOk) {
         buyOutcome = "Up";
