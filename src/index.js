@@ -842,10 +842,16 @@ async function main() {
             
             if (pw.pairCost !== null) {
               const pcColor = pw.pairCost < 1.0 ? ANSI.green : ANSI.red;
-              const profitStr = pw.pairCost < 1.0 
-                ? `${ANSI.green}+$${((1.0 - pw.pairCost) * pw.pairs).toFixed(2)} locked${ANSI.reset}`
-                : `${ANSI.red}need cheaper buys${ANSI.reset}`;
+              // Correct profit calc: guaranteed payout (pairs×$1) minus total spent
+              const guaranteedPayout = pw.pairs * 1.0;
+              const guaranteedProfit = guaranteedPayout - pw.totalSpent;
+              const bestPayout = Math.max(pw.qtyUp, pw.qtyDown) * 1.0;
+              const bestProfit = bestPayout - pw.totalSpent;
+              const profitStr = guaranteedProfit > 0
+                ? `${ANSI.green}+$${guaranteedProfit.toFixed(2)} guaranteed${ANSI.reset}`
+                : `${ANSI.red}$${guaranteedProfit.toFixed(2)} worst case${ANSI.reset}`;
               tradingLines.push(kv("Pair Cost:", `${pcColor}$${pw.pairCost.toFixed(3)}${ANSI.reset} | Pairs: ${pw.pairs} | ${profitStr}`));
+              tradingLines.push(kv("Scenarios:", `Worst: $${guaranteedProfit.toFixed(2)} | Best: ${ANSI.green}+$${bestProfit.toFixed(2)}${ANSI.reset}`));
             } else {
               tradingLines.push(kv("Pair Cost:", `${ANSI.yellow}need both sides${ANSI.reset}`));
             }
