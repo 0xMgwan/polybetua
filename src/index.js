@@ -32,7 +32,7 @@ import { scoreDirection, applyTimeAwareness } from "./engines/probability.js";
 import { computeEdge, decide } from "./engines/edge.js";
 import { appendCsvRow, formatNumber, formatPct, getCandleWindowTiming, sleep } from "./utils.js";
 import { startBinanceTradeStream } from "./data/binanceWs.js";
-import { initializeTrading, evaluateAndTrade, getTradingStats, checkResolutions, checkStopLoss, cleanupStalePositions } from "./trading/index.js";
+import { initializeTrading, evaluateAndTrade, getTradingStats, checkResolutions, checkStopLoss, cleanupStalePositions, checkHedgeOpportunity } from "./trading/index.js";
 import fs from "node:fs";
 import path from "node:path";
 import readline from "node:readline";
@@ -729,6 +729,12 @@ async function main() {
         };
 
         tradeResult = await evaluateAndTrade(prediction, marketData, currentPrice, indicators, ptb);
+
+        // ═══ MID-WINDOW HEDGING: Check if we should hedge an open position ═══
+        // Runs every cycle but only triggers when: 7-13 min into candle + opposite ≤28¢
+        if (!CONFIG.trading.dryRun) {
+          await checkHedgeOpportunity(marketData);
+        }
       }
 
       if (marketSlug && priceToBeatState.slug !== marketSlug) {
