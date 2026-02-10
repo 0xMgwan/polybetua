@@ -25,24 +25,23 @@ export class TradingEngine {
     this.hourlyTrades = [];
     this.positionTracker = new PositionTracker();
     
-    // ─── PAIR TRADING STATE ────────────────────────────────────
-    // Track cumulative buys on BOTH sides for the current window
-    this.currentWindow = null;  // { slug, qtyUp, costUp, qtyDown, costDown, buys[], lockedAt }
-    this.windowHistory = [];    // Past windows for P&L tracking
+    // ─── DIP-ARB INSPIRED PAIR TRADING ────────────────────────
+    // Leg1: Buy the cheap side when price dips (≤ 25¢)
+    // Leg2: Buy the OTHER side when combined cost < sumTarget
+    //        → match Leg1 shares for perfect hedge
+    // If Leg2 can't fill → emergency exit (sell Leg1)
+    this.currentWindow = null;
+    this.windowHistory = [];
     
-    // Pair trading parameters
-    this.CHEAP_THRESHOLD = 0.25;     // First side: buy when ≤ 25¢ (truly cheap, 3:1+ R:R)
-    this.SECOND_SIDE_THRESHOLD = 0.40; // Second side: up to 40¢ to complete pair
-    this.IDEAL_THRESHOLD = 0.15;     // Ideal entry: ≤ 15¢ (amazing price)
-    this.MAX_WINDOW_SPEND = 5;       // Max $5 per window (split across buys)
-    this.BUY_SIZE_DOLLARS = 2;       // $2 per individual buy
-    this.BALANCE_BUY_SIZE = 1;       // $1 for balance buys (second side)
-    this.MIN_BUY_COOLDOWN = 60000;   // 60s between buys (same side)
-    this.MAX_SINGLE_SIDE = 2;        // Max $2 on one side before other side has ANY buys
-    this.MAX_PAIR_COST = 0.65;       // Only buy second side if resulting pair cost < 65¢
+    // Strategy parameters (inspired by MrFadiAi/Polymarket-bot DipArb)
+    this.LEG1_THRESHOLD = 0.25;      // Leg1: buy when ≤ 25¢ (cheap side)
+    this.SUM_TARGET = 0.92;          // Only buy Leg2 if Leg1+Leg2 < 92¢ (8%+ guaranteed profit)
+    this.LEG1_SIZE_DOLLARS = 2;      // $2 for Leg1
+    this.MAX_WINDOW_SPEND = 5;       // Max $5 per window
+    this.MIN_BUY_COOLDOWN = 30000;   // 30s between buys
+    this.EXIT_MINUTES_LEFT = 2;      // Emergency exit with 2 min left
     
-    this.lastUpBuyTime = 0;
-    this.lastDownBuyTime = 0;
+    this.lastBuyTime = 0;
   }
 
   _tradesInLastHour() {
@@ -56,21 +55,21 @@ export class TradingEngine {
     if (this.currentWindow && this.currentWindow.slug === slug) {
       return this.currentWindow;
     }
-    // New window — archive old one if exists
     if (this.currentWindow) {
       this._archiveWindow();
     }
     this.currentWindow = {
       slug,
-      qtyUp: 0,
-      costUp: 0,
-      qtyDown: 0,
-      costDown: 0,
+      phase: "waiting",    // waiting → leg1_filled → completed | exited
+      leg1: null,           // { side, qty, cost, avgPrice, tokenId }
+      leg2: null,           // { side, qty, cost, avgPrice, tokenId }
+      qtyUp: 0, costUp: 0,
+      qtyDown: 0, costDown: 0,
       buys: [],
       locked: false,
       createdAt: Date.now()
     };
-    console.log(`[PairTrade] 🆕 New window: ${slug.slice(-20)}`);
+    console.log(`[DipArb] 🆕 New window: ${slug.slice(-20)}`);
     return this.currentWindow;
   }
 
@@ -79,38 +78,29 @@ export class TradingEngine {
     const w = this.currentWindow;
     const totalSpent = w.costUp + w.costDown;
     const minQty = Math.min(w.qtyUp, w.qtyDown);
-    const pairValue = minQty * 1.0; // At resolution, min(qty) pairs pay $1 each
-    const profit = pairValue - totalSpent;
     
     if (totalSpent > 0) {
-      const avgPairCost = this._calcPairCost(w);
-      console.log(`[PairTrade] 📦 Archived window: ${w.slug.slice(-20)} | Spent: $${totalSpent.toFixed(2)} | Pairs: ${minQty} | PairCost: $${avgPairCost?.toFixed(3) || 'N/A'} | Est P&L: $${profit.toFixed(2)}`);
-      this.windowHistory.push({
-        ...w,
-        archivedAt: Date.now(),
-        totalSpent,
-        minQty,
-        estProfit: profit
-      });
+      const pairCost = this._calcPairCost(w);
+      const profit = minQty > 0 ? (minQty * 1.0 - totalSpent) : -totalSpent;
+      console.log(`[DipArb] 📦 Archived: ${w.phase} | Spent: $${totalSpent.toFixed(2)} | Pairs: ${minQty} | PairCost: ${pairCost ? '$' + pairCost.toFixed(3) : 'N/A'} | Est P&L: $${profit.toFixed(2)}`);
+      this.windowHistory.push({ ...w, archivedAt: Date.now(), totalSpent, minQty, estProfit: profit });
     }
     this.currentWindow = null;
   }
 
   _calcPairCost(w) {
-    // Weighted pair cost = (costUp / qtyUp) + (costDown / qtyDown)
     if (w.qtyUp === 0 || w.qtyDown === 0) return null;
     return (w.costUp / w.qtyUp) + (w.costDown / w.qtyDown);
   }
 
   // ═══════════════════════════════════════════════════════════════
   // MAIN DECISION: shouldTrade()
-  // Called every ~1 second. Decides if we should buy a side.
+  // Leg1 → Leg2 flow inspired by MrFadiAi/Polymarket-bot DipArb
   // ═══════════════════════════════════════════════════════════════
   shouldTrade(prediction, marketData, currentPrice, indicators = {}) {
     if (!this.config.enabled) {
       return { shouldTrade: false, reason: "Trading disabled" };
     }
-
     if (!prediction || !marketData) {
       return { shouldTrade: false, reason: "Missing prediction or market data" };
     }
@@ -126,219 +116,235 @@ export class TradingEngine {
 
     const combinedPrice = upPrice + downPrice;
 
-    // CIRCUIT BREAKER: Total exposure
+    // CIRCUIT BREAKER
     const totalExposure = this.positionTracker.openPositions.reduce((sum, pos) => sum + pos.cost, 0);
     if (totalExposure >= 20) {
       return { shouldTrade: false, reason: `Circuit breaker: exposure $${totalExposure.toFixed(2)} >= $20` };
     }
 
-    // ─── TIMING: Trade minutes 1-12 of candle ─────────────────
-    // Pair trading needs more time to accumulate both sides
+    // ─── TIMING ──────────────────────────────────────────────
+    let minLeft = 15;
+    let candleMinute = 0;
     if (marketData.marketEndTime) {
       const msLeft = marketData.marketEndTime - now;
-      const minLeft = msLeft / 60000;
-      const candleMinute = Math.floor(15 - minLeft);
+      minLeft = msLeft / 60000;
+      candleMinute = Math.floor(15 - minLeft);
       
       if (minLeft > 14) {
         return { shouldTrade: false, reason: `Too early (min ${candleMinute}/15)` };
       }
-      if (minLeft < 3) {
-        return { shouldTrade: false, reason: `Too late (min ${candleMinute}/15, ${minLeft.toFixed(1)} min left) — no time to balance` };
-      }
+    }
+
+    // Cooldown check
+    if ((now - this.lastBuyTime) < this.MIN_BUY_COOLDOWN) {
+      return { shouldTrade: false, reason: "Cooldown" };
     }
 
     // ─── GET/CREATE WINDOW ────────────────────────────────────
     const window = this._getOrCreateWindow(slug);
     const totalSpent = window.costUp + window.costDown;
 
-    // Check if profit is already locked
-    if (window.locked) {
-      return { shouldTrade: false, reason: `Window locked — profit secured (spent $${totalSpent.toFixed(2)})` };
+    // Already completed or exited
+    if (window.phase === "completed" || window.phase === "exited") {
+      return { shouldTrade: false, reason: `Window ${window.phase} (spent $${totalSpent.toFixed(2)})` };
     }
 
-    // Max spend per window
+    // Max spend
     if (totalSpent >= this.MAX_WINDOW_SPEND) {
-      return { shouldTrade: false, reason: `Window budget exhausted ($${totalSpent.toFixed(2)} >= $${this.MAX_WINDOW_SPEND})` };
+      return { shouldTrade: false, reason: `Budget exhausted ($${totalSpent.toFixed(2)} >= $${this.MAX_WINDOW_SPEND})` };
     }
 
-    // Check if we've locked profit: min(qtyUp, qtyDown) × $1 > totalSpent
+    // Profit locked check
     const minQty = Math.min(window.qtyUp, window.qtyDown);
     if (minQty > 0 && (minQty * 1.0) > totalSpent) {
       window.locked = true;
+      window.phase = "completed";
       const pairCost = this._calcPairCost(window);
-      console.log(`[PairTrade] 🔒 PROFIT LOCKED! Pairs: ${minQty} | Spent: $${totalSpent.toFixed(2)} | Pair cost: $${pairCost?.toFixed(3)} | Guaranteed: $${(minQty - totalSpent).toFixed(2)}`);
-      return { shouldTrade: false, reason: `Profit locked! ${minQty} pairs @ $${pairCost?.toFixed(3)} pair cost` };
+      console.log(`[DipArb] 🔒 PROFIT LOCKED! Pairs: ${minQty} | Spent: $${totalSpent.toFixed(2)} | Pair cost: $${pairCost?.toFixed(3)} | Guaranteed: $${(minQty - totalSpent).toFixed(2)}`);
+      return { shouldTrade: false, reason: `Profit locked! ${minQty} pairs @ $${pairCost?.toFixed(3)}` };
     }
 
-    // ─── DECIDE WHICH SIDE TO BUY ─────────────────────────────
-    console.log(`[PairTrade] ══════════════════════════════════════`);
-    console.log(`[PairTrade] Up: $${upPrice.toFixed(3)} | Down: $${downPrice.toFixed(3)} | Combined: $${combinedPrice.toFixed(3)}`);
-    console.log(`[PairTrade] Window: ${window.qtyUp} Up ($${window.costUp.toFixed(2)}) | ${window.qtyDown} Down ($${window.costDown.toFixed(2)}) | Total: $${totalSpent.toFixed(2)}`);
+    console.log(`[DipArb] ══════════════════════════════════════`);
+    console.log(`[DipArb] Phase: ${window.phase} | Up: $${upPrice.toFixed(3)} | Down: $${downPrice.toFixed(3)} | Sum: $${combinedPrice.toFixed(3)}`);
+    console.log(`[DipArb] Window: ${window.qtyUp} Up ($${window.costUp.toFixed(2)}) | ${window.qtyDown} Down ($${window.costDown.toFixed(2)}) | Min left: ${minLeft.toFixed(1)}`);
 
-    // Find which side(s) are cheap enough to buy
-    // First side: must be ≤ 35¢ (cheap)
-    // Second side: can be up to 45¢ to complete the pair
-    const hasUp = window.qtyUp > 0;
-    const hasDown = window.qtyDown > 0;
-    const upThreshold = hasDown && !hasUp ? this.SECOND_SIDE_THRESHOLD : this.CHEAP_THRESHOLD;
-    const downThreshold = hasUp && !hasDown ? this.SECOND_SIDE_THRESHOLD : this.CHEAP_THRESHOLD;
-    const upCheap = upPrice <= upThreshold && upPrice > 0.05;
-    const downCheap = downPrice <= downThreshold && downPrice > 0.05;
-
-    if (!upCheap && !downCheap) {
-      const needSecond = (hasUp && !hasDown) || (hasDown && !hasUp);
-      const threshStr = needSecond ? `need 2nd side ≤$${this.SECOND_SIDE_THRESHOLD}` : `both > $${this.CHEAP_THRESHOLD}`;
-      console.log(`[PairTrade] ⚠ Neither side cheap enough (Up $${upPrice.toFixed(3)} vs $${upThreshold}, Down $${downPrice.toFixed(3)} vs $${downThreshold}) — ${threshStr}`);
-      console.log(`[PairTrade] ══════════════════════════════════════`);
-      return { shouldTrade: false, reason: `No cheap side (Up $${upPrice.toFixed(2)}/${upThreshold}, Down $${downPrice.toFixed(2)}/${downThreshold})` };
-    }
-
-    // ─── SINGLE-SIDE CAP ──────────────────────────────────────
-    // CRITICAL: Don't keep buying one side without the other.
-    // Max $3 on one side before the other side has ANY position.
-    // This prevents the "64 Down, 0 Up" problem.
-    const upMaxedOut = window.costUp >= this.MAX_SINGLE_SIDE && window.qtyDown === 0;
-    const downMaxedOut = window.costDown >= this.MAX_SINGLE_SIDE && window.qtyUp === 0;
-
-    if (upMaxedOut && !downCheap) {
-      console.log(`[PairTrade] ⚠ Up maxed ($${window.costUp.toFixed(2)}) but Down not cheap ($${downPrice.toFixed(3)}) — waiting for Down to dip`);
-      console.log(`[PairTrade] ══════════════════════════════════════`);
-      return { shouldTrade: false, reason: `Up side maxed ($${window.costUp.toFixed(2)}), waiting for Down ≤$${this.CHEAP_THRESHOLD}` };
-    }
-    if (downMaxedOut && !upCheap) {
-      console.log(`[PairTrade] ⚠ Down maxed ($${window.costDown.toFixed(2)}) but Up not cheap ($${upPrice.toFixed(3)}) — waiting for Up to dip`);
-      console.log(`[PairTrade] ══════════════════════════════════════`);
-      return { shouldTrade: false, reason: `Down side maxed ($${window.costDown.toFixed(2)}), waiting for Up ≤$${this.CHEAP_THRESHOLD}` };
-    }
-
-    // Decide which side to buy:
-    // Priority 1: Buy the side we have NONE of (must balance)
-    // Priority 2: Buy the side we have LESS of
-    // Priority 3: Buy the CHEAPER side
-    let buyOutcome = null;
-    let buyPrice = null;
-    let buyReason = "";
-
-    // Check cooldowns
-    const upCooldownOk = (now - this.lastUpBuyTime) >= this.MIN_BUY_COOLDOWN;
-    const downCooldownOk = (now - this.lastDownBuyTime) >= this.MIN_BUY_COOLDOWN;
-
-    // Force buy the missing side if we have one side already
-    // BUT only if the resulting pair cost would be profitable (< MAX_PAIR_COST)
-    let isBalanceTrade = false;
-    if (window.qtyUp > 0 && window.qtyDown === 0 && downCheap && downCooldownOk) {
-      // Simulate: would buying Down create a profitable pair?
-      const simPairCost = (window.costUp / window.qtyUp) + downPrice;
-      if (simPairCost <= this.MAX_PAIR_COST) {
-        buyOutcome = "Down";
-        buyPrice = downPrice;
-        buyReason = `BALANCE: pair cost would be $${simPairCost.toFixed(3)}`;
-        isBalanceTrade = true;
-      } else {
-        console.log(`[PairTrade] ⚠ Down @ $${downPrice.toFixed(3)} would make pair cost $${simPairCost.toFixed(3)} > $${this.MAX_PAIR_COST} — SKIP`);
+    // ═══════════════════════════════════════════════════════════
+    // PHASE: WAITING — look for Leg1 (cheap side)
+    // ═══════════════════════════════════════════════════════════
+    if (window.phase === "waiting") {
+      // Don't start new Leg1 with < 5 min left (not enough time for Leg2)
+      if (minLeft < 5) {
+        console.log(`[DipArb] ⏳ Only ${minLeft.toFixed(1)} min left — too late to start new pair`);
+        console.log(`[DipArb] ══════════════════════════════════════`);
+        return { shouldTrade: false, reason: `Too late for new pair (${minLeft.toFixed(1)} min left)` };
       }
-    } else if (window.qtyDown > 0 && window.qtyUp === 0 && upCheap && upCooldownOk) {
-      const simPairCost = upPrice + (window.costDown / window.qtyDown);
-      if (simPairCost <= this.MAX_PAIR_COST) {
-        buyOutcome = "Up";
-        buyPrice = upPrice;
-        buyReason = `BALANCE: pair cost would be $${simPairCost.toFixed(3)}`;
-        isBalanceTrade = true;
-      } else {
-        console.log(`[PairTrade] ⚠ Up @ $${upPrice.toFixed(3)} would make pair cost $${simPairCost.toFixed(3)} > $${this.MAX_PAIR_COST} — SKIP`);
+
+      // Find cheapest side ≤ LEG1_THRESHOLD
+      const upCheap = upPrice <= this.LEG1_THRESHOLD && upPrice > 0.05;
+      const downCheap = downPrice <= this.LEG1_THRESHOLD && downPrice > 0.05;
+
+      let buyOutcome = null;
+      let buyPrice = null;
+
+      if (upCheap && downCheap) {
+        // Both cheap — buy the cheaper one
+        if (upPrice <= downPrice) {
+          buyOutcome = "Up"; buyPrice = upPrice;
+        } else {
+          buyOutcome = "Down"; buyPrice = downPrice;
+        }
+      } else if (upCheap) {
+        buyOutcome = "Up"; buyPrice = upPrice;
+      } else if (downCheap) {
+        buyOutcome = "Down"; buyPrice = downPrice;
       }
-    }
-    
-    if (!buyOutcome && upCheap && downCheap) {
-      // Both cheap — buy the side we have less of
-      if (window.qtyUp <= window.qtyDown && upCooldownOk) {
-        buyOutcome = "Up";
-        buyPrice = upPrice;
-        buyReason = `Balancing: have ${window.qtyUp} Up vs ${window.qtyDown} Down`;
-      } else if (downCooldownOk) {
-        buyOutcome = "Down";
-        buyPrice = downPrice;
-        buyReason = `Balancing: have ${window.qtyDown} Down vs ${window.qtyUp} Up`;
-      } else if (upCooldownOk) {
-        buyOutcome = "Up";
-        buyPrice = upPrice;
-        buyReason = `Down on cooldown, buying Up`;
+
+      if (!buyOutcome) {
+        console.log(`[DipArb] ⏳ Waiting for dip: Up $${upPrice.toFixed(3)} / Down $${downPrice.toFixed(3)} > $${this.LEG1_THRESHOLD}`);
+        console.log(`[DipArb] ══════════════════════════════════════`);
+        return { shouldTrade: false, reason: `Waiting for dip (Up $${upPrice.toFixed(2)}, Down $${downPrice.toFixed(2)} > $${this.LEG1_THRESHOLD})` };
       }
-    } else if (upCheap && upCooldownOk) {
-      buyOutcome = "Up";
-      buyPrice = upPrice;
-      buyReason = `Up cheap @ $${upPrice.toFixed(3)}`;
-    } else if (downCheap && downCooldownOk) {
-      buyOutcome = "Down";
-      buyPrice = downPrice;
-      buyReason = `Down cheap @ $${downPrice.toFixed(3)}`;
+
+      const rr = ((1 - buyPrice) / buyPrice).toFixed(1);
+      console.log(`[DipArb] ✅ LEG1: BUY ${buyOutcome} @ $${buyPrice.toFixed(3)} | R:R ${rr}:1`);
+      console.log(`[DipArb] ══════════════════════════════════════`);
+
+      return {
+        shouldTrade: true,
+        direction: buyOutcome === "Up" ? "LONG" : "SHORT",
+        targetOutcome: buyOutcome,
+        confidence: 85,
+        edge: 1.0 - combinedPrice,
+        marketPrice: buyPrice,
+        modelProb: 0.85,
+        strategy: "DIPARB_LEG1",
+        isLeg2: false,
+        leg1Shares: null,
+        bullScore: 0, bearScore: 0,
+        signals: [`leg1:${buyOutcome}@$${buyPrice.toFixed(3)}`],
+        reason: `LEG1: ${buyOutcome} @ $${buyPrice.toFixed(3)} | R:R ${rr}:1`
+      };
     }
 
-    if (!buyOutcome) {
-      console.log(`[PairTrade] ⏳ Cheap side on cooldown — waiting`);
-      console.log(`[PairTrade] ══════════════════════════════════════`);
-      return { shouldTrade: false, reason: "Cheap side on cooldown" };
-    }
-
-    // Check if this buy would improve or worsen pair cost
-    if (window.qtyUp > 0 && window.qtyDown > 0) {
-      const currentPairCost = this._calcPairCost(window);
-      // Simulate the buy
-      const simQty = Math.floor(this.BUY_SIZE_DOLLARS / buyPrice);
-      const simCost = simQty * buyPrice;
-      const simWindow = { ...window };
-      if (buyOutcome === "Up") {
-        simWindow.qtyUp += simQty;
-        simWindow.costUp += simCost;
-      } else {
-        simWindow.qtyDown += simQty;
-        simWindow.costDown += simCost;
-      }
-      const newPairCost = this._calcPairCost(simWindow);
+    // ═══════════════════════════════════════════════════════════
+    // PHASE: LEG1_FILLED — look for Leg2 (hedge the other side)
+    // ═══════════════════════════════════════════════════════════
+    if (window.phase === "leg1_filled" && window.leg1) {
+      const leg1 = window.leg1;
+      const hedgeSide = leg1.side === "Up" ? "Down" : "Up";
+      const hedgePrice = hedgeSide === "Up" ? upPrice : downPrice;
       
-      if (newPairCost && currentPairCost && newPairCost > 1.01) {
-        console.log(`[PairTrade] ⚠ Buy would raise pair cost to $${newPairCost.toFixed(3)} > $1.01 — SKIP`);
-        console.log(`[PairTrade] ══════════════════════════════════════`);
-        return { shouldTrade: false, reason: `Buy would raise pair cost to $${newPairCost.toFixed(3)}` };
+      // Emergency exit: sell Leg1 if time running out and no Leg2
+      if (minLeft < this.EXIT_MINUTES_LEFT) {
+        console.log(`[DipArb] ⚠ EMERGENCY: ${minLeft.toFixed(1)} min left, no Leg2 — need to EXIT Leg1`);
+        console.log(`[DipArb] ══════════════════════════════════════`);
+        // Signal an emergency sell of Leg1
+        return {
+          shouldTrade: true,
+          direction: leg1.side === "Up" ? "LONG" : "SHORT",
+          targetOutcome: leg1.side,
+          confidence: 50,
+          edge: 0,
+          marketPrice: leg1.side === "Up" ? upPrice : downPrice,
+          modelProb: 0.5,
+          strategy: "DIPARB_EXIT",
+          isExit: true,
+          exitTokenId: leg1.tokenId,
+          exitShares: leg1.qty,
+          bullScore: 0, bearScore: 0,
+          signals: [`exit:${leg1.side}@market`],
+          reason: `EXIT: Sell ${leg1.qty}x ${leg1.side} — no time for Leg2`
+        };
       }
+
+      // Check if Leg2 would be profitable: Leg1 avg + Leg2 price < sumTarget
+      const totalCost = leg1.avgPrice + hedgePrice;
+      
+      if (totalCost >= this.SUM_TARGET) {
+        const profitIfBuy = (1.0 - totalCost) * 100;
+        console.log(`[DipArb] ⏳ Waiting Leg2: ${hedgeSide} @ $${hedgePrice.toFixed(3)} | Sum: $${totalCost.toFixed(3)} > $${this.SUM_TARGET} (${profitIfBuy.toFixed(1)}% profit)`);
+        console.log(`[DipArb] ══════════════════════════════════════`);
+        return { shouldTrade: false, reason: `Leg2 too expensive: ${hedgeSide} $${hedgePrice.toFixed(2)} | Sum $${totalCost.toFixed(3)} > $${this.SUM_TARGET}` };
+      }
+
+      // Leg2 is profitable! Buy SAME number of shares as Leg1 for perfect hedge
+      const profitPct = ((1.0 - totalCost) * 100).toFixed(1);
+      console.log(`[DipArb] ✅ LEG2: BUY ${hedgeSide} @ $${hedgePrice.toFixed(3)} | Sum: $${totalCost.toFixed(3)} | Profit: ${profitPct}% | Shares: ${leg1.qty} (match Leg1)`);
+      console.log(`[DipArb] ══════════════════════════════════════`);
+
+      return {
+        shouldTrade: true,
+        direction: hedgeSide === "Up" ? "LONG" : "SHORT",
+        targetOutcome: hedgeSide,
+        confidence: 95,
+        edge: 1.0 - totalCost,
+        marketPrice: hedgePrice,
+        modelProb: 0.95,
+        strategy: "DIPARB_LEG2",
+        isLeg2: true,
+        leg1Shares: leg1.qty,
+        bullScore: 0, bearScore: 0,
+        signals: [`leg2:${hedgeSide}@$${hedgePrice.toFixed(3)}`, `sum:$${totalCost.toFixed(3)}`],
+        reason: `LEG2: ${hedgeSide} @ $${hedgePrice.toFixed(3)} | Sum: $${totalCost.toFixed(3)} | +${profitPct}%`
+      };
     }
 
-    // Spread check
-    if (marketData.spread !== undefined && marketData.spread !== null && marketData.spread > 0.10) {
-      return { shouldTrade: false, reason: `Spread too wide (${(marketData.spread * 100).toFixed(1)}% > 10%)` };
-    }
-
-    const rr = ((1 - buyPrice) / buyPrice).toFixed(1);
-    const pairCostStr = (window.qtyUp > 0 && window.qtyDown > 0) ? `$${this._calcPairCost(window).toFixed(3)}` : 'N/A';
-    console.log(`[PairTrade] ✅ BUY ${buyOutcome} @ $${buyPrice.toFixed(3)} | R:R ${rr}:1 | ${buyReason} | PairCost: ${pairCostStr}`);
-    console.log(`[PairTrade] ══════════════════════════════════════`);
-
-    const stratLabel = isBalanceTrade ? 'BALANCE' : (buyPrice <= this.IDEAL_THRESHOLD ? 'IDEAL' : 'CHEAP');
-    return {
-      shouldTrade: true,
-      direction: buyOutcome === "Up" ? "LONG" : "SHORT",
-      targetOutcome: buyOutcome,
-      confidence: 85,
-      edge: 1.0 - combinedPrice,
-      marketPrice: buyPrice,
-      modelProb: 0.85,
-      strategy: `PAIR_${stratLabel}`,
-      isBalanceTrade,
-      bullScore: 0,
-      bearScore: 0,
-      signals: [`pair:${buyOutcome}@$${buyPrice.toFixed(3)}`, buyReason],
-      reason: `PAIR: ${buyOutcome} @ $${buyPrice.toFixed(3)} | ${buyReason} | PairCost: ${pairCostStr}`
-    };
+    console.log(`[DipArb] ══════════════════════════════════════`);
+    return { shouldTrade: false, reason: `Window in phase: ${window.phase}` };
   }
 
   // ═══════════════════════════════════════════════════════════════
-  // EXECUTE TRADE — place order and update window state
+  // EXECUTE TRADE — handle Leg1, Leg2, and Exit
   // ═══════════════════════════════════════════════════════════════
   async executeTrade(signal, marketData, priceToBeat = null) {
     if (!signal.shouldTrade) {
       return { success: false, reason: signal.reason };
     }
 
+    // ─── EMERGENCY EXIT: Sell Leg1 position ──────────────────
+    if (signal.isExit) {
+      try {
+        const window = this.currentWindow;
+        if (!window || !window.leg1) {
+          return { success: false, reason: "No Leg1 to exit" };
+        }
+        
+        const tokenId = window.leg1.tokenId;
+        const currentPrice = signal.marketPrice;
+        const shares = window.leg1.qty;
+        
+        // Sell at slightly below market to ensure fill
+        const sellPrice = Math.max(0.01, currentPrice - 0.005);
+        
+        console.log(`[DipArb] 🚨 EMERGENCY EXIT: Selling ${shares}x ${window.leg1.side} @ $${sellPrice.toFixed(3)}`);
+        
+        const order = await this.tradingService.placeOrder({
+          tokenId,
+          side: "SELL",
+          price: sellPrice,
+          size: shares,
+          orderType: "GTC"
+        });
+
+        if (order && order.orderID) {
+          window.phase = "exited";
+          const loss = window.leg1.cost - (sellPrice * shares);
+          console.log(`[DipArb] ✅ Exit order placed. Est loss: $${loss.toFixed(2)}`);
+          this.lastBuyTime = Date.now();
+          return { success: true, reason: `EXIT: Sold ${shares}x ${window.leg1.side} @ $${sellPrice.toFixed(3)} | Est loss: $${loss.toFixed(2)}` };
+        } else {
+          console.log(`[DipArb] ❌ Exit order failed — will hold to expiry`);
+          window.phase = "exited";
+          return { success: false, reason: "Exit order failed" };
+        }
+      } catch (error) {
+        console.log(`[DipArb] ❌ Exit error: ${error.message}`);
+        if (this.currentWindow) this.currentWindow.phase = "exited";
+        return { success: false, reason: `Exit failed: ${error.message}` };
+      }
+    }
+
+    // ─── LEG1 or LEG2: Buy order ─────────────────────────────
     try {
       const tokenId = signal.targetOutcome === "Up" 
         ? marketData.upTokenId 
@@ -348,38 +354,35 @@ export class TradingEngine {
         return { success: false, reason: "Missing token ID" };
       }
 
-      const side = "BUY";
       const price = Math.min(0.95, signal.marketPrice + 0.003);
-      
-      // $2 for cheap buys, $1 for balance buys (second side = higher risk)
-      const maxOrderDollars = signal.isBalanceTrade ? this.BALANCE_BUY_SIZE : this.BUY_SIZE_DOLLARS;
       const MIN_SHARES = 5;
+      let size;
       
-      let size = Math.floor(maxOrderDollars / price);
-      if (size < MIN_SHARES) size = MIN_SHARES;
+      if (signal.isLeg2 && signal.leg1Shares) {
+        // Leg2: match Leg1 shares for perfect hedge
+        size = signal.leg1Shares;
+      } else {
+        // Leg1: buy $2 worth
+        size = Math.floor(this.LEG1_SIZE_DOLLARS / price);
+        if (size < MIN_SHARES) size = MIN_SHARES;
+      }
       
       const maxCost = price * size;
-      if (maxCost > maxOrderDollars + 1) {
-        size = Math.floor(maxOrderDollars / price);
-        if (size < MIN_SHARES) {
-          return { success: false, reason: `Price too high for pair buy ($${price.toFixed(3)})` };
-        }
-      }
 
       const order = await this.tradingService.placeOrder({
         tokenId,
-        side,
+        side: "BUY",
         price,
         size,
         orderType: "GTC"
       });
 
       if (!order || !order.orderID) {
-        console.log("[PairTrade] Order failed - no orderID returned");
+        console.log("[DipArb] Order failed - no orderID returned");
         return { success: false, reason: "Order failed - no orderID returned" };
       }
       
-      console.log(`[PairTrade] Order accepted: ${signal.targetOutcome} ${size}x @ $${price.toFixed(3)} = $${maxCost.toFixed(2)}`);
+      console.log(`[DipArb] ✅ Order: ${signal.strategy} ${signal.targetOutcome} ${size}x @ $${price.toFixed(3)} = $${maxCost.toFixed(2)}`);
 
       // Update window state
       const window = this.currentWindow;
@@ -387,28 +390,53 @@ export class TradingEngine {
         if (signal.targetOutcome === "Up") {
           window.qtyUp += size;
           window.costUp += maxCost;
-          this.lastUpBuyTime = Date.now();
         } else {
           window.qtyDown += size;
           window.costDown += maxCost;
-          this.lastDownBuyTime = Date.now();
         }
         window.buys.push({
           outcome: signal.targetOutcome,
-          price,
-          size,
-          cost: maxCost,
+          price, size, cost: maxCost,
           orderId: order.orderID,
+          leg: signal.isLeg2 ? "leg2" : "leg1",
           timestamp: Date.now()
         });
 
-        const pairCost = this._calcPairCost(window);
-        const totalSpent = window.costUp + window.costDown;
-        const minQty = Math.min(window.qtyUp, window.qtyDown);
-        console.log(`[PairTrade] Window: ${window.qtyUp} Up ($${window.costUp.toFixed(2)}) + ${window.qtyDown} Down ($${window.costDown.toFixed(2)}) = $${totalSpent.toFixed(2)} | Pairs: ${minQty} | PairCost: ${pairCost ? '$' + pairCost.toFixed(3) : 'need both sides'}`);
+        // Update phase and leg info
+        if (!signal.isLeg2) {
+          // Leg1 filled
+          window.phase = "leg1_filled";
+          window.leg1 = {
+            side: signal.targetOutcome,
+            qty: size,
+            cost: maxCost,
+            avgPrice: price,
+            tokenId,
+            timestamp: Date.now()
+          };
+          console.log(`[DipArb] Phase → leg1_filled: ${size}x ${signal.targetOutcome} @ $${price.toFixed(3)}`);
+        } else {
+          // Leg2 filled — pair complete!
+          window.phase = "completed";
+          window.leg2 = {
+            side: signal.targetOutcome,
+            qty: size,
+            cost: maxCost,
+            avgPrice: price,
+            tokenId,
+            timestamp: Date.now()
+          };
+          const totalSpent = window.costUp + window.costDown;
+          const pairs = Math.min(window.qtyUp, window.qtyDown);
+          const pairCost = this._calcPairCost(window);
+          const profit = pairs * 1.0 - totalSpent;
+          window.locked = profit > 0;
+          console.log(`[DipArb] 🎯 PAIR COMPLETE! ${pairs} pairs | Cost: $${pairCost?.toFixed(3)} | Spent: $${totalSpent.toFixed(2)} | Guaranteed: $${profit.toFixed(2)}`);
+        }
       }
 
       this.lastTradeTime = Date.now();
+      this.lastBuyTime = Date.now();
       this.hourlyTrades.push(Date.now());
       
       const trade = {
@@ -417,9 +445,7 @@ export class TradingEngine {
         outcome: signal.targetOutcome,
         confidence: signal.confidence,
         edge: signal.edge,
-        price,
-        size,
-        cost: maxCost,
+        price, size, cost: maxCost,
         orderId: order.orderID,
         marketSlug: marketData.marketSlug
       };
@@ -431,8 +457,7 @@ export class TradingEngine {
         orderId: order.orderID,
         direction: signal.direction,
         outcome: signal.targetOutcome,
-        price,
-        size,
+        price, size,
         confidence: signal.confidence,
         edge: signal.edge,
         marketSlug: marketData.marketSlug,
@@ -440,26 +465,19 @@ export class TradingEngine {
         priceToBeat,
         upPrice: marketData.upPrice,
         downPrice: marketData.downPrice,
-        indicators: signal.indicators || {},
-        bullScore: signal.bullScore || 0,
-        bearScore: signal.bearScore || 0,
+        indicators: {},
+        bullScore: 0, bearScore: 0,
         signals: signal.signals || [],
-        strategy: signal.strategy || "PAIR"
+        strategy: signal.strategy || "DIPARB"
       });
 
       return {
-        success: true,
-        trade,
-        order,
-        reason: `PAIR ${signal.targetOutcome} ${size}x @ $${price.toFixed(2)} (cost: $${maxCost.toFixed(2)})`
+        success: true, trade, order,
+        reason: `${signal.strategy} ${signal.targetOutcome} ${size}x @ $${price.toFixed(2)} ($${maxCost.toFixed(2)})`
       };
 
     } catch (error) {
-      return {
-        success: false,
-        reason: `Trade failed: ${error.message}`,
-        error
-      };
+      return { success: false, reason: `Trade failed: ${error.message}`, error };
     }
   }
 
@@ -490,6 +508,9 @@ export class TradingEngine {
       tradesThisHour: this._tradesInLastHour(),
       pairWindow: w ? {
         slug: w.slug?.slice(-20),
+        phase: w.phase,
+        leg1: w.leg1 ? { side: w.leg1.side, qty: w.leg1.qty, avgPrice: w.leg1.avgPrice } : null,
+        leg2: w.leg2 ? { side: w.leg2.side, qty: w.leg2.qty, avgPrice: w.leg2.avgPrice } : null,
         qtyUp: w.qtyUp,
         costUp: w.costUp,
         qtyDown: w.qtyDown,

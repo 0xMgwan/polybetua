@@ -820,8 +820,8 @@ async function main() {
       if (tradingStatus?.enabled) {
         const stats = getTradingStats();
         const statusColor = tradingStatus.dryRun ? ANSI.yellow : ANSI.green;
-        const statusText = tradingStatus.dryRun ? "DRY RUN" : "PAIR TRADING";
-        tradingLines.push(kv("TRADING:", `${statusColor}${statusText}${ANSI.reset} ${ANSI.dim}($2/buy, $5/window)${ANSI.reset}`));
+        const statusText = tradingStatus.dryRun ? "DRY RUN" : "DIP-ARB";
+        tradingLines.push(kv("TRADING:", `${statusColor}${statusText}${ANSI.reset} ${ANSI.dim}(Leg1→Leg2, $5/window)${ANSI.reset}`));
         
         if (stats) {
           // P&L Display
@@ -832,35 +832,42 @@ async function main() {
             tradingLines.push(kv("P&L:", `${pnlColor}${pnlSign}$${pnl.totalPnl.toFixed(2)}${ANSI.reset}`));
           }
           
-          // Pair Window Display (the key info)
+          // DipArb Window Display
           const pw = stats.pairWindow;
           if (pw) {
-            const upStr = `${ANSI.green}${pw.qtyUp} Up ($${pw.costUp.toFixed(2)})${ANSI.reset}`;
-            const downStr = `${ANSI.red}${pw.qtyDown} Down ($${pw.costDown.toFixed(2)})${ANSI.reset}`;
-            tradingLines.push(kv("Window:", `${upStr} | ${downStr}`));
+            // Phase display
+            const phaseColors = { waiting: ANSI.yellow, leg1_filled: ANSI.cyan, completed: ANSI.green, exited: ANSI.red };
+            const phaseIcons = { waiting: "⏳", leg1_filled: "🔄", completed: "✅", exited: "🚪" };
+            const phaseColor = phaseColors[pw.phase] || ANSI.reset;
+            const phaseIcon = phaseIcons[pw.phase] || "";
+            tradingLines.push(kv("Phase:", `${phaseColor}${phaseIcon} ${pw.phase?.toUpperCase()}${ANSI.reset}`));
+            
+            // Leg1 info
+            if (pw.leg1) {
+              tradingLines.push(kv("Leg1:", `${ANSI.green}${pw.leg1.qty}x ${pw.leg1.side} @ $${pw.leg1.avgPrice.toFixed(3)}${ANSI.reset}`));
+            }
+            // Leg2 info
+            if (pw.leg2) {
+              tradingLines.push(kv("Leg2:", `${ANSI.green}${pw.leg2.qty}x ${pw.leg2.side} @ $${pw.leg2.avgPrice.toFixed(3)}${ANSI.reset}`));
+            }
+            
+            // Spent
             tradingLines.push(kv("Spent:", `$${pw.totalSpent.toFixed(2)} / $5.00 | Buys: ${pw.buys}`));
             
+            // Pair info (only if both sides)
             if (pw.pairCost !== null) {
-              const pcColor = pw.pairCost < 1.0 ? ANSI.green : ANSI.red;
-              // Correct profit calc: guaranteed payout (pairs×$1) minus total spent
-              const guaranteedPayout = pw.pairs * 1.0;
-              const guaranteedProfit = guaranteedPayout - pw.totalSpent;
-              const bestPayout = Math.max(pw.qtyUp, pw.qtyDown) * 1.0;
-              const bestProfit = bestPayout - pw.totalSpent;
+              const guaranteedProfit = pw.pairs * 1.0 - pw.totalSpent;
               const profitStr = guaranteedProfit > 0
                 ? `${ANSI.green}+$${guaranteedProfit.toFixed(2)} guaranteed${ANSI.reset}`
-                : `${ANSI.red}$${guaranteedProfit.toFixed(2)} worst case${ANSI.reset}`;
-              tradingLines.push(kv("Pair Cost:", `${pcColor}$${pw.pairCost.toFixed(3)}${ANSI.reset} | Pairs: ${pw.pairs} | ${profitStr}`));
-              tradingLines.push(kv("Scenarios:", `Worst: $${guaranteedProfit.toFixed(2)} | Best: ${ANSI.green}+$${bestProfit.toFixed(2)}${ANSI.reset}`));
-            } else {
-              tradingLines.push(kv("Pair Cost:", `${ANSI.yellow}need both sides${ANSI.reset}`));
+                : `${ANSI.red}$${guaranteedProfit.toFixed(2)} worst${ANSI.reset}`;
+              tradingLines.push(kv("Pair:", `$${pw.pairCost.toFixed(3)} | ${pw.pairs} pairs | ${profitStr}`));
             }
             
             if (pw.locked) {
               tradingLines.push(kv("STATUS:", `${ANSI.green}🔒 PROFIT LOCKED${ANSI.reset}`));
             }
           } else {
-            tradingLines.push(kv("Window:", `${ANSI.dim}waiting for cheap prices...${ANSI.reset}`));
+            tradingLines.push(kv("Phase:", `${ANSI.yellow}⏳ Scanning for dips ≤$0.25${ANSI.reset}`));
           }
           
           // Windows completed
