@@ -88,7 +88,8 @@ export class TradingEngine {
       return { shouldTrade: false, reason: "Missing prediction or market data" };
     }
 
-    // RULE #4: Enter early for best prices — minute 1 is fine
+    // RULE #4: Enter in first half of candle only (min 1-8)
+    // Late entries (min 9+) = stale signal, worse prices, no time to recover
     if (marketData.marketEndTime) {
       const msLeft = marketData.marketEndTime - now;
       const minLeft = msLeft / 60000;
@@ -97,8 +98,8 @@ export class TradingEngine {
       if (minLeft > 14) {
         return { shouldTrade: false, reason: `Too early (min ${candleMinute}/15) — waiting for candle start` };
       }
-      if (minLeft < 1) {
-        return { shouldTrade: false, reason: `Too late (min ${candleMinute}/15)` };
+      if (minLeft < 7) {
+        return { shouldTrade: false, reason: `Too late (min ${candleMinute}/15, ${minLeft.toFixed(1)} min left) — stale signal, bad prices` };
       }
       
       console.log(`[Timing] Candle minute: ${candleMinute}/15 | ${minLeft.toFixed(1)} min left`);
