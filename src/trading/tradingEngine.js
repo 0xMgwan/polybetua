@@ -142,7 +142,7 @@ export class TradingEngine {
     // ─── STRATEGY 2: CHEAP TOKEN HARVESTING ────────────────────
     // Buy cheap tokens when momentum supports the direction
     // Need: delta1m + delta3m agree AND MACD supports
-    const cheapThreshold = 0.25;
+    const cheapThreshold = 0.35;
     const hasMomentumData = indicators.delta1m !== undefined && indicators.delta3m !== undefined && indicators.macdHist !== undefined;
     
     if (hasMomentumData && upPrice && upPrice < cheapThreshold && upPrice > 0.08) {
@@ -339,65 +339,15 @@ export class TradingEngine {
     // Tiered score requirements — achievable but still selective
     let requiredDiff;
     if (marketPrice < 0.30) {
-      requiredDiff = 3; // Cheap: good R:R, moderate signal OK
+      requiredDiff = 2; // Cheap: great R:R, light signal OK
     } else if (marketPrice < 0.40) {
-      requiredDiff = 4; // Medium: need decent signal
+      requiredDiff = 3; // Medium: need decent signal
     } else {
-      requiredDiff = 5; // Expensive: need strong signal
+      requiredDiff = 4; // Expensive: need strong signal
     }
 
     if (scoreDiff < requiredDiff) {
-      // ─── FALLBACK: Always trade once per window ──────────────────
-      // Smart fallback: use anti-streak bias if we have outcome history
-      // Otherwise pick cheapest side
-      const streak = this._getRecentStreak();
-      let fallbackSide, fallbackPrice, fallbackReason;
-      
-      if (streak.length >= 2 && streak.direction) {
-        // Anti-streak: bet OPPOSITE to recent streak (mean reversion edge)
-        fallbackSide = streak.direction === "Up" ? "Down" : "Up";
-        fallbackPrice = fallbackSide === "Up" ? upPrice : downPrice;
-        fallbackReason = `anti-streak (${streak.length}x ${streak.direction})`;
-      } else if (streak.length === 1 && streak.direction) {
-        // Mild anti-streak bias
-        fallbackSide = streak.direction === "Up" ? "Down" : "Up";
-        fallbackPrice = fallbackSide === "Up" ? upPrice : downPrice;
-        fallbackReason = `mild anti-streak (1x ${streak.direction})`;
-      } else {
-        // No streak data: pick cheapest side
-        fallbackSide = (upPrice && downPrice) ? (upPrice <= downPrice ? "Up" : "Down") : (upPrice ? "Up" : "Down");
-        fallbackPrice = fallbackSide === "Up" ? upPrice : downPrice;
-        fallbackReason = "cheapest side";
-      }
-      
-      // Validate fallback price, if bad try other side
-      if (!fallbackPrice || fallbackPrice > 0.45 || fallbackPrice <= 0.08) {
-        fallbackSide = fallbackSide === "Up" ? "Down" : "Up";
-        fallbackPrice = fallbackSide === "Up" ? upPrice : downPrice;
-        fallbackReason = "other side (price fix)";
-      }
-      
-      const fallbackDir = fallbackSide === "Up" ? "LONG" : "SHORT";
-      const streakConf = streak.length >= 2 ? 60 : 55; // Higher conf with streak data
-      
-      if (fallbackPrice && fallbackPrice <= 0.45 && fallbackPrice > 0.08) {
-        console.log(`[Strategy] 🔸 FALLBACK: Weak signal (diff ${scoreDiff} < ${requiredDiff}) → ${fallbackDir} ${fallbackSide} @ $${fallbackPrice.toFixed(3)} (${fallbackReason}) | Streak: ${streak.length}x ${streak.direction || 'none'}`);
-        console.log(`[Strategy] ══════════════════════════════════════`);
-        return {
-          shouldTrade: true,
-          direction: fallbackDir,
-          targetOutcome: fallbackSide,
-          confidence: streakConf,
-          edge: Math.max(0.50 - fallbackPrice, 0.02),
-          marketPrice: fallbackPrice,
-          modelProb: streakConf / 100,
-          strategy: streak.length >= 2 ? "FALLBACK_STREAK" : "FALLBACK",
-          bullScore, bearScore, signals: [...signals, `FALLBACK:${fallbackReason}`, `STREAK:${streak.length}x${streak.direction || 'none'}`],
-          reason: `FALLBACK ${fallbackDir} @ $${fallbackPrice.toFixed(2)} (${fallbackReason})`
-        };
-      }
-      
-      console.log(`[Strategy] ⚠ Score diff ${scoreDiff} < ${requiredDiff} for $${marketPrice.toFixed(2)} tier — SKIP`);
+      console.log(`[Strategy] ⚠ Score diff ${scoreDiff} < ${requiredDiff} for $${marketPrice.toFixed(2)} tier — SKIP (no edge, no trade)`);
       console.log(`[Strategy] ══════════════════════════════════════`);
       return {
         shouldTrade: false,
