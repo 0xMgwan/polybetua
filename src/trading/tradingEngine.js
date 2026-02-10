@@ -31,14 +31,15 @@ export class TradingEngine {
     this.windowHistory = [];    // Past windows for P&L tracking
     
     // Pair trading parameters
-    this.CHEAP_THRESHOLD = 0.35;     // First side: buy when ≤ 35¢
-    this.SECOND_SIDE_THRESHOLD = 0.40; // Second side: up to 40¢ to complete pair (pair cost ≤ 75¢)
-    this.IDEAL_THRESHOLD = 0.28;     // Ideal entry: ≤ 28¢
+    this.CHEAP_THRESHOLD = 0.25;     // First side: buy when ≤ 25¢ (truly cheap, 3:1+ R:R)
+    this.SECOND_SIDE_THRESHOLD = 0.40; // Second side: up to 40¢ to complete pair
+    this.IDEAL_THRESHOLD = 0.15;     // Ideal entry: ≤ 15¢ (amazing price)
     this.MAX_WINDOW_SPEND = 5;       // Max $5 per window (split across buys)
     this.BUY_SIZE_DOLLARS = 2;       // $2 per individual buy
-    this.MIN_BUY_COOLDOWN = 60000;   // 60s between buys (same side) — give other side time to get cheap
-    this.MAX_SINGLE_SIDE = 3;        // Max $3 on one side before other side has ANY buys
-    this.PAIR_COST_TARGET = 0.985;   // Target: avg pair cost ≤ 98.5¢
+    this.BALANCE_BUY_SIZE = 1;       // $1 for balance buys (second side)
+    this.MIN_BUY_COOLDOWN = 60000;   // 60s between buys (same side)
+    this.MAX_SINGLE_SIDE = 2;        // Max $2 on one side before other side has ANY buys
+    this.MAX_PAIR_COST = 0.65;       // Only buy second side if resulting pair cost < 65¢
     
     this.lastUpBuyTime = 0;
     this.lastDownBuyTime = 0;
@@ -223,18 +224,32 @@ export class TradingEngine {
     const downCooldownOk = (now - this.lastDownBuyTime) >= this.MIN_BUY_COOLDOWN;
 
     // Force buy the missing side if we have one side already
+    // BUT only if the resulting pair cost would be profitable (< MAX_PAIR_COST)
     let isBalanceTrade = false;
     if (window.qtyUp > 0 && window.qtyDown === 0 && downCheap && downCooldownOk) {
-      buyOutcome = "Down";
-      buyPrice = downPrice;
-      buyReason = `MUST BALANCE: have Up but no Down`;
-      isBalanceTrade = true;
+      // Simulate: would buying Down create a profitable pair?
+      const simPairCost = (window.costUp / window.qtyUp) + downPrice;
+      if (simPairCost <= this.MAX_PAIR_COST) {
+        buyOutcome = "Down";
+        buyPrice = downPrice;
+        buyReason = `BALANCE: pair cost would be $${simPairCost.toFixed(3)}`;
+        isBalanceTrade = true;
+      } else {
+        console.log(`[PairTrade] ⚠ Down @ $${downPrice.toFixed(3)} would make pair cost $${simPairCost.toFixed(3)} > $${this.MAX_PAIR_COST} — SKIP`);
+      }
     } else if (window.qtyDown > 0 && window.qtyUp === 0 && upCheap && upCooldownOk) {
-      buyOutcome = "Up";
-      buyPrice = upPrice;
-      buyReason = `MUST BALANCE: have Down but no Up`;
-      isBalanceTrade = true;
-    } else if (upCheap && downCheap) {
+      const simPairCost = upPrice + (window.costDown / window.qtyDown);
+      if (simPairCost <= this.MAX_PAIR_COST) {
+        buyOutcome = "Up";
+        buyPrice = upPrice;
+        buyReason = `BALANCE: pair cost would be $${simPairCost.toFixed(3)}`;
+        isBalanceTrade = true;
+      } else {
+        console.log(`[PairTrade] ⚠ Up @ $${upPrice.toFixed(3)} would make pair cost $${simPairCost.toFixed(3)} > $${this.MAX_PAIR_COST} — SKIP`);
+      }
+    }
+    
+    if (!buyOutcome && upCheap && downCheap) {
       // Both cheap — buy the side we have less of
       if (window.qtyUp <= window.qtyDown && upCooldownOk) {
         buyOutcome = "Up";
@@ -337,7 +352,7 @@ export class TradingEngine {
       const price = Math.min(0.95, signal.marketPrice + 0.003);
       
       // $2 for cheap buys, $1 for balance buys (second side = higher risk)
-      const maxOrderDollars = signal.isBalanceTrade ? 1 : this.BUY_SIZE_DOLLARS;
+      const maxOrderDollars = signal.isBalanceTrade ? this.BALANCE_BUY_SIZE : this.BUY_SIZE_DOLLARS;
       const MIN_SHARES = 5;
       
       let size = Math.floor(maxOrderDollars / price);
