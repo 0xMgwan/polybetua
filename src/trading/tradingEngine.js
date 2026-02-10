@@ -301,23 +301,11 @@ export class TradingEngine {
     }
 
     // Max price cap — 47¢ (above this, risk:reward is bad)
+    // NEVER flip to opposite side — that bets AGAINST our indicators
     if (marketPrice > 0.47) {
-      // If price is too high on winning side, try the OTHER side (which is cheap)
-      const otherDirection = direction === "LONG" ? "SHORT" : "LONG";
-      const otherOutcome = otherDirection === "LONG" ? "Up" : "Down";
-      const otherPrice = otherDirection === "LONG" ? upPrice : downPrice;
-      
-      if (otherPrice && otherPrice < 0.47 && otherPrice > 0.08) {
-        // Switch to the cheaper side — better risk:reward
-        direction = otherDirection;
-        targetOutcome = otherOutcome;
-        marketPrice = otherPrice;
-        console.log(`[Strategy] 🔄 Winning side too expensive, switching to ${targetOutcome} @ $${marketPrice.toFixed(3)} (better R:R)`);
-      } else {
-        console.log(`[Strategy] ⚠ Both sides too expensive — SKIP`);
-        console.log(`[Strategy] ══════════════════════════════════════`);
-        return { shouldTrade: false, reason: `Both sides too expensive` };
-      }
+      console.log(`[Strategy] ⚠ Winning side ${targetOutcome} @ $${marketPrice.toFixed(3)} too expensive (>47¢) — SKIP (won't bet against indicators)`);
+      console.log(`[Strategy] ══════════════════════════════════════`);
+      return { shouldTrade: false, reason: `Winning side too expensive ($${marketPrice.toFixed(2)} > $0.47) — won't flip against indicators` };
     }
 
     // ─── CONFLICT FILTER: Only block for expensive tokens ──────
