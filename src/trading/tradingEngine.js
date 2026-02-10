@@ -36,6 +36,7 @@ export class TradingEngine {
     // Strategy parameters (inspired by MrFadiAi/Polymarket-bot DipArb)
     this.LEG1_THRESHOLD = 0.25;      // Leg1: buy when ≤ 25¢ (cheap side)
     this.SUM_TARGET = 0.95;          // Only buy Leg2 if Leg1+Leg2 < 95¢ (5%+ guaranteed profit)
+    this.MIN_COMBINED = 0.92;        // Skip Leg1 if Up+Down < 92¢ (market too biased)
     this.LEG1_SIZE_DOLLARS = 2;      // $2 for Leg1
     this.MAX_WINDOW_SPEND = 5;       // Max $5 per window
     this.MIN_BUY_COOLDOWN = 30000;   // 30s between buys
@@ -177,6 +178,16 @@ export class TradingEngine {
         console.log(`[DipArb] ⏳ Only ${minLeft.toFixed(1)} min left — too late to start new pair`);
         console.log(`[DipArb] ══════════════════════════════════════`);
         return { shouldTrade: false, reason: `Too late for new pair (${minLeft.toFixed(1)} min left)` };
+      }
+
+      // BIAS CHECK: If combined price is too low, market is heavily biased
+      // e.g. Up 25¢ + Down 60¢ = 85¢ → market strongly expects Down to win
+      // Buying Up here is fighting the market — skip
+      if (combinedPrice < this.MIN_COMBINED) {
+        const bias = upPrice < downPrice ? "DOWN" : "UP";
+        console.log(`[DipArb] ⚠ Market biased ${bias}: combined $${combinedPrice.toFixed(3)} < $${this.MIN_COMBINED} — too risky for Leg1`);
+        console.log(`[DipArb] ══════════════════════════════════════`);
+        return { shouldTrade: false, reason: `Market biased (combined $${combinedPrice.toFixed(2)} < $${this.MIN_COMBINED})` };
       }
 
       // Find cheapest side ≤ LEG1_THRESHOLD
