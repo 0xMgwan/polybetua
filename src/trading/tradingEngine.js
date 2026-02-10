@@ -109,18 +109,16 @@ export class TradingEngine {
 
     // ─── STRATEGY 2: CHEAP TOKEN HARVESTING ────────────────────
     // Buy cheap tokens when momentum supports the direction
-    // Need: delta1m + delta3m agree, OR MACD supports
+    // Need: delta1m + delta3m agree AND MACD supports
     const cheapThreshold = 0.30;
-    const hasMomentumData = indicators.delta1m !== undefined || indicators.macdHist !== undefined;
+    const hasMomentumData = indicators.delta1m !== undefined && indicators.delta3m !== undefined && indicators.macdHist !== undefined;
     
     if (hasMomentumData && upPrice && upPrice < cheapThreshold && upPrice > 0.08) {
       const deltasAgree = indicators.delta1m > 0 && indicators.delta3m > 0;
-      const macdSupports = indicators.macdHist !== undefined && indicators.macdHist > 0;
-      const momentumOK = deltasAgree || macdSupports;
-      // Block if momentum is strongly AGAINST us
-      const stronglyAgainst = (indicators.delta1m < 0 && indicators.delta3m < 0 && indicators.macdHist < 0);
+      const macdSupports = indicators.macdHist > 0;
+      const momentumOK = deltasAgree && macdSupports;
       
-      if (momentumOK && !stronglyAgainst) {
+      if (momentumOK) {
         console.log(`[Strategy] 🎯 CHEAP UP: $${upPrice.toFixed(3)} < $${cheapThreshold} + momentum OK (deltas:${deltasAgree}, MACD:${macdSupports})`);
         return {
           shouldTrade: true,
@@ -140,11 +138,10 @@ export class TradingEngine {
     }
     if (hasMomentumData && downPrice && downPrice < cheapThreshold && downPrice > 0.08) {
       const deltasAgree = indicators.delta1m < 0 && indicators.delta3m < 0;
-      const macdSupports = indicators.macdHist !== undefined && indicators.macdHist < 0;
-      const momentumOK = deltasAgree || macdSupports;
-      const stronglyAgainst = (indicators.delta1m > 0 && indicators.delta3m > 0 && indicators.macdHist > 0);
+      const macdSupports = indicators.macdHist < 0;
+      const momentumOK = deltasAgree && macdSupports;
       
-      if (momentumOK && !stronglyAgainst) {
+      if (momentumOK) {
         console.log(`[Strategy] 🎯 CHEAP DOWN: $${downPrice.toFixed(3)} < $${cheapThreshold} + momentum OK (deltas:${deltasAgree}, MACD:${macdSupports})`);
         return {
           shouldTrade: true,
@@ -163,43 +160,12 @@ export class TradingEngine {
       }
     }
 
-    // ─── STRATEGY 3: MEAN-REVERSION (STRICT) ─────────────────
-    // Fade sharp moves ONLY when BOTH exhaustion signals confirm
-    // AND the fade token is cheap (good risk:reward)
+    // ─── STRATEGY 3: MEAN-REVERSION (DISABLED) ─────────────────
+    // Disabled: too risky on 15m BTC, trends continue
     if (ptb && indicators.lastPrice) {
       const currentMove = ((indicators.lastPrice - ptb) / ptb) * 100;
-      const sharpMoveThreshold = 0.25; // 0.25% = ~$175 on $70k BTC
-      
-      if (Math.abs(currentMove) > sharpMoveThreshold) {
-        const rsiExtreme = indicators.rsi !== undefined && indicators.rsi !== null &&
-          ((currentMove > 0 && indicators.rsi > 72) || (currentMove < 0 && indicators.rsi < 28));
-        const macdDecelerating = indicators.macdHistDelta !== undefined && indicators.macdHistDelta !== null &&
-          ((currentMove > 0 && indicators.macdHistDelta < 0) || (currentMove < 0 && indicators.macdHistDelta > 0));
-        
-        if (rsiExtreme && macdDecelerating) {
-          const fadeDirection = currentMove > 0 ? "SHORT" : "LONG";
-          const fadeOutcome = fadeDirection === "LONG" ? "Up" : "Down";
-          const fadePrice = fadeDirection === "LONG" ? upPrice : downPrice;
-          
-          if (fadePrice && fadePrice < 0.30) {
-            console.log(`[Strategy] 🔄 MEAN-REVERSION: BTC ${currentMove > 0 ? 'UP' : 'DOWN'} ${Math.abs(currentMove).toFixed(3)}% | RSI:${indicators.rsi?.toFixed(0)} | MACD decel: YES`);
-            console.log(`[Strategy] Fading with ${fadeOutcome} @ $${fadePrice.toFixed(3)} (BOTH exhaustion + cheap token)`);
-            return {
-              shouldTrade: true,
-              direction: fadeDirection,
-              targetOutcome: fadeOutcome,
-              confidence: 68,
-              edge: 0.50 - fadePrice,
-              marketPrice: fadePrice,
-              modelProb: 0.58,
-              strategy: "MEAN_REVERSION",
-              bullScore: 0, bearScore: 0, signals: [`FADE:move=${currentMove.toFixed(3)}%`, `RSI:${indicators.rsi?.toFixed(0)}`, `MACD:decel`],
-              reason: `FADE ${currentMove > 0 ? 'UP' : 'DOWN'} (${Math.abs(currentMove).toFixed(3)}%) + exhaustion → ${fadeOutcome} @ $${fadePrice.toFixed(3)}`
-            };
-          }
-        } else {
-          console.log(`[Strategy] ⚠ Sharp move ${currentMove.toFixed(3)}% but need BOTH exhaustion (RSI:${rsiExtreme}, MACD-decel:${macdDecelerating}) — NOT fading`);
-        }
+      if (Math.abs(currentMove) > 0.25) {
+        console.log(`[Strategy] ⚠ Sharp move ${currentMove.toFixed(3)}% — NOT fading (disabled)`);
       }
     }
 
@@ -300,14 +266,14 @@ export class TradingEngine {
       return { shouldTrade: false, reason: "Invalid market price" };
     }
 
-    // Max price cap — 50¢ (above this, risk:reward is bad)
-    if (marketPrice > 0.50) {
+    // Max price cap — 47¢ (above this, risk:reward is bad)
+    if (marketPrice > 0.47) {
       // If price is too high on winning side, try the OTHER side (which is cheap)
       const otherDirection = direction === "LONG" ? "SHORT" : "LONG";
       const otherOutcome = otherDirection === "LONG" ? "Up" : "Down";
       const otherPrice = otherDirection === "LONG" ? upPrice : downPrice;
       
-      if (otherPrice && otherPrice < 0.50 && otherPrice > 0.08) {
+      if (otherPrice && otherPrice < 0.47 && otherPrice > 0.08) {
         // Switch to the cheaper side — better risk:reward
         direction = otherDirection;
         targetOutcome = otherOutcome;
@@ -321,9 +287,9 @@ export class TradingEngine {
     }
 
     // ─── CONFLICT FILTER: Only block for expensive tokens ──────
-    // Cheap tokens (<35¢) have good R:R even with some conflict
-    // Expensive tokens (>35¢) need majors aligned
-    if (majorConflict && marketPrice > 0.35) {
+    // Very cheap tokens (<25¢) have good R:R even with some conflict
+    // Everything else needs majors aligned
+    if (majorConflict && marketPrice > 0.25) {
       const conflicting = [];
       if (macdDir !== 0 && macdDir !== winningDir) conflicting.push("MACD");
       if (vwapDir !== 0 && vwapDir !== winningDir) conflicting.push("VWAP");
