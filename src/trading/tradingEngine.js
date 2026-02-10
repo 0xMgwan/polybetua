@@ -117,10 +117,10 @@ export class TradingEngine {
 
     const combinedPrice = upPrice + downPrice;
 
-    // CIRCUIT BREAKER
+    // CIRCUIT BREAKER: Max $10 total open exposure across all windows
     const totalExposure = this.positionTracker.openPositions.reduce((sum, pos) => sum + pos.cost, 0);
-    if (totalExposure >= 20) {
-      return { shouldTrade: false, reason: `Circuit breaker: exposure $${totalExposure.toFixed(2)} >= $20` };
+    if (totalExposure >= 10) {
+      return { shouldTrade: false, reason: `Circuit breaker: exposure $${totalExposure.toFixed(2)} >= $10` };
     }
 
     // ─── TIMING ──────────────────────────────────────────────
