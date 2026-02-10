@@ -88,7 +88,7 @@ export class TradingEngine {
       return { shouldTrade: false, reason: "Missing prediction or market data" };
     }
 
-    // RULE #4: Enter early for freshest signals and best prices (min 1-6)
+    // RULE #4: Enter in first 9 minutes of candle (min 1-9)
     if (marketData.marketEndTime) {
       const msLeft = marketData.marketEndTime - now;
       const minLeft = msLeft / 60000;
@@ -97,7 +97,7 @@ export class TradingEngine {
       if (minLeft > 14) {
         return { shouldTrade: false, reason: `Too early (min ${candleMinute}/15) — waiting for candle start` };
       }
-      if (minLeft < 9) {
+      if (minLeft < 6) {
         return { shouldTrade: false, reason: `Too late (min ${candleMinute}/15, ${minLeft.toFixed(1)} min left) — stale signal` };
       }
       
@@ -213,43 +213,61 @@ export class TradingEngine {
       return { shouldTrade: false, reason: "Invalid market price" };
     }
 
-    // ─── R:R GATE: Only trade cheap tokens ─────────────────────
-    // This is the KEY insight. On a ~50/50 market:
-    //   25¢ token → 3:1 R:R → need >25% accuracy → VERY profitable
-    //   33¢ token → 2:1 R:R → need >33% accuracy → profitable with edge
-    //   40¢ token → 1.5:1 R:R → need >40% accuracy → marginal
-    //   50¢ token → 1:1 R:R → need >50% accuracy → LOSING (fees eat you)
-    const MAX_ENTRY_PRICE = 0.38; // Max 38¢ = minimum 1.6:1 R:R
+    // ─── TIERED R:R GATE ──────────────────────────────────────
+    // Cheaper = easier to trade (good R:R covers mistakes)
+    // Expensive = much stricter (bad R:R needs high accuracy)
+    //
+    // TIER 1 (≤33¢): 2:1+ R:R — need diff≥4, at least 2/3 majors agree
+    // TIER 2 (≤42¢): 1.4:1+ R:R — need diff≥6, ALL majors agree
+    // TIER 3 (≤48¢): 1.1:1+ R:R — need diff≥8, ALL majors agree
+    // BLOCKED (>48¢): R:R too low, never trade
 
-    if (marketPrice > MAX_ENTRY_PRICE) {
-      console.log(`[Strategy] ⚠ ${targetOutcome} @ $${marketPrice.toFixed(3)} too expensive (>${MAX_ENTRY_PRICE}) — R:R too low, SKIP`);
+    const MAX_PRICE = 0.48;
+    if (marketPrice > MAX_PRICE) {
+      console.log(`[Strategy] ⚠ ${targetOutcome} @ $${marketPrice.toFixed(3)} > $${MAX_PRICE} — BLOCKED`);
       console.log(`[Strategy] ══════════════════════════════════════`);
-      return { shouldTrade: false, reason: `Price $${marketPrice.toFixed(2)} > $${MAX_ENTRY_PRICE} — R:R too low` };
+      return { shouldTrade: false, reason: `Price $${marketPrice.toFixed(2)} > $${MAX_PRICE} — R:R too low` };
     }
 
-    // ─── SIGNAL QUALITY GATE ───────────────────────────────────
-    // ALL 3 majors (MACD, VWAP, Heiken Ashi) must agree with direction
-    // This is the ONLY filter — but it's strict
-    if (!majorsAligned) {
+    // Count how many majors agree (0-3)
+    const majorsAgreeCount = (macdDir === 0 || macdDir === winningDir ? 1 : 0) +
+                             (vwapDir === 0 || vwapDir === winningDir ? 1 : 0) +
+                             (heikenDir === 0 || heikenDir === winningDir ? 1 : 0);
+
+    let requiredDiff, requiredMajors, tier;
+    if (marketPrice <= 0.33) {
+      requiredDiff = 4;
+      requiredMajors = 2;
+      tier = "CHEAP";
+    } else if (marketPrice <= 0.42) {
+      requiredDiff = 6;
+      requiredMajors = 3;
+      tier = "MID";
+    } else {
+      requiredDiff = 8;
+      requiredMajors = 3;
+      tier = "PREMIUM";
+    }
+
+    if (majorsAgreeCount < requiredMajors) {
       const conflicting = [];
       if (macdDir !== 0 && macdDir !== winningDir) conflicting.push("MACD");
       if (vwapDir !== 0 && vwapDir !== winningDir) conflicting.push("VWAP");
       if (heikenDir !== 0 && heikenDir !== winningDir) conflicting.push("Heiken");
-      console.log(`[Strategy] ⚠ Majors NOT aligned: ${conflicting.join(', ')} disagree — SKIP`);
+      console.log(`[Strategy] ⚠ [${tier}] Majors ${majorsAgreeCount}/3 < ${requiredMajors} needed: ${conflicting.join(', ')} disagree — SKIP`);
       console.log(`[Strategy] ══════════════════════════════════════`);
       return {
         shouldTrade: false,
-        reason: `Majors not aligned (${conflicting.join(', ')} disagree)`
+        reason: `[${tier}] Majors ${majorsAgreeCount}/${requiredMajors} (${conflicting.join(', ')} disagree)`
       };
     }
 
-    // Need minimum score diff of 6 — overwhelming consensus only
-    if (scoreDiff < 6) {
-      console.log(`[Strategy] ⚠ Score diff ${scoreDiff} < 6 — not enough consensus, SKIP`);
+    if (scoreDiff < requiredDiff) {
+      console.log(`[Strategy] ⚠ [${tier}] Score diff ${scoreDiff} < ${requiredDiff} — SKIP`);
       console.log(`[Strategy] ══════════════════════════════════════`);
       return {
         shouldTrade: false,
-        reason: `Weak consensus (diff ${scoreDiff} < 6)`
+        reason: `[${tier}] Weak signal (diff ${scoreDiff} < ${requiredDiff})`
       };
     }
 
@@ -261,7 +279,7 @@ export class TradingEngine {
     // ─── TRADE! ────────────────────────────────────────────────
     const rr = ((1 - marketPrice) / marketPrice).toFixed(1);
     const indicatorConf = (Math.max(bullScore, bearScore) / (bullScore + bearScore)) * 100;
-    console.log(`[Strategy] ✅ TRADE: ${direction} ${targetOutcome} @ $${marketPrice.toFixed(3)} | R:R ${rr}:1 | Score: ${bullScore}B/${bearScore}S (diff ${scoreDiff}) | Majors: ALL ALIGNED`);
+    console.log(`[Strategy] ✅ [${tier}] TRADE: ${direction} ${targetOutcome} @ $${marketPrice.toFixed(3)} | R:R ${rr}:1 | Diff: ${scoreDiff}/${requiredDiff} | Majors: ${majorsAgreeCount}/3`);
     console.log(`[Strategy] ══════════════════════════════════════`);
 
     return {
@@ -272,9 +290,9 @@ export class TradingEngine {
       edge: Math.max((indicatorConf / 100) - marketPrice, 0.01),
       marketPrice,
       modelProb: indicatorConf / 100,
-      strategy: `RR_${marketPrice < 0.25 ? 'GREAT' : marketPrice < 0.33 ? 'GOOD' : 'OK'}`,
+      strategy: `RR_${tier}`,
       bullScore, bearScore, signals,
-      reason: `R:R ${rr}:1 | ${direction} ${bullScore}v${bearScore} @ $${marketPrice.toFixed(2)} | Majors aligned`
+      reason: `[${tier}] R:R ${rr}:1 | ${direction} ${bullScore}v${bearScore} @ $${marketPrice.toFixed(2)} | Majors ${majorsAgreeCount}/3`
     };
   }
 
