@@ -21,12 +21,44 @@ export class TradingEngine {
     this.tradedMarkets = new Set();  // SURVIVAL: Track which markets we already traded
     this.hourlyTrades = [];          // SURVIVAL: Track trades per hour
     this.positionTracker = new PositionTracker();
+    
+    // Streak tracking for mean-reversion edge
+    this.outcomeHistory = [];  // ["Up","Down","Up",...] actual BTC results
+    this.maxOutcomeHistory = 10;
   }
 
   _tradesInLastHour() {
     const oneHourAgo = Date.now() - 3600000;
     this.hourlyTrades = this.hourlyTrades.filter(t => t > oneHourAgo);
     return this.hourlyTrades.length;
+  }
+
+  // Derive actual BTC direction from resolved positions
+  _updateOutcomeHistory() {
+    const closed = this.positionTracker.closedPositions;
+    this.outcomeHistory = [];
+    for (const pos of closed.slice(-this.maxOutcomeHistory)) {
+      let actualDir;
+      if (pos.status === "RESOLVED_WIN") {
+        actualDir = pos.outcome; // Won → BTC went the way we bet
+      } else {
+        actualDir = pos.outcome === "Up" ? "Down" : "Up"; // Lost → opposite
+      }
+      this.outcomeHistory.push(actualDir);
+    }
+  }
+
+  // Get the recent streak of same-direction outcomes
+  _getRecentStreak() {
+    this._updateOutcomeHistory();
+    if (this.outcomeHistory.length === 0) return { direction: null, length: 0 };
+    const last = this.outcomeHistory[this.outcomeHistory.length - 1];
+    let count = 0;
+    for (let i = this.outcomeHistory.length - 1; i >= 0; i--) {
+      if (this.outcomeHistory[i] === last) count++;
+      else break;
+    }
+    return { direction: last, length: count };
   }
 
   shouldTrade(prediction, marketData, currentPrice, indicators = {}) {
@@ -110,7 +142,7 @@ export class TradingEngine {
     // ─── STRATEGY 2: CHEAP TOKEN HARVESTING ────────────────────
     // Buy cheap tokens when momentum supports the direction
     // Need: delta1m + delta3m agree AND MACD supports
-    const cheapThreshold = 0.30;
+    const cheapThreshold = 0.25;
     const hasMomentumData = indicators.delta1m !== undefined && indicators.delta3m !== undefined && indicators.macdHist !== undefined;
     
     if (hasMomentumData && upPrice && upPrice < cheapThreshold && upPrice > 0.08) {
@@ -316,26 +348,52 @@ export class TradingEngine {
 
     if (scoreDiff < requiredDiff) {
       // ─── FALLBACK: Always trade once per window ──────────────────
-      // If score diff is too low, pick the cheapest side with a lower confidence
-      // This ensures we trade every 15 minutes — small size on weak signals
-      const cheaperSide = (upPrice && downPrice) ? (upPrice <= downPrice ? "Up" : "Down") : (upPrice ? "Up" : "Down");
-      const cheaperPrice = cheaperSide === "Up" ? upPrice : downPrice;
-      const fallbackDir = cheaperSide === "Up" ? "LONG" : "SHORT";
+      // Smart fallback: use anti-streak bias if we have outcome history
+      // Otherwise pick cheapest side
+      const streak = this._getRecentStreak();
+      let fallbackSide, fallbackPrice, fallbackReason;
       
-      if (cheaperPrice && cheaperPrice <= 0.45 && cheaperPrice > 0.08) {
-        console.log(`[Strategy] 🔸 FALLBACK: Weak signal (diff ${scoreDiff} < ${requiredDiff}) → ${fallbackDir} ${cheaperSide} @ $${cheaperPrice.toFixed(3)} (cheapest side, small conviction)`);
+      if (streak.length >= 2 && streak.direction) {
+        // Anti-streak: bet OPPOSITE to recent streak (mean reversion edge)
+        fallbackSide = streak.direction === "Up" ? "Down" : "Up";
+        fallbackPrice = fallbackSide === "Up" ? upPrice : downPrice;
+        fallbackReason = `anti-streak (${streak.length}x ${streak.direction})`;
+      } else if (streak.length === 1 && streak.direction) {
+        // Mild anti-streak bias
+        fallbackSide = streak.direction === "Up" ? "Down" : "Up";
+        fallbackPrice = fallbackSide === "Up" ? upPrice : downPrice;
+        fallbackReason = `mild anti-streak (1x ${streak.direction})`;
+      } else {
+        // No streak data: pick cheapest side
+        fallbackSide = (upPrice && downPrice) ? (upPrice <= downPrice ? "Up" : "Down") : (upPrice ? "Up" : "Down");
+        fallbackPrice = fallbackSide === "Up" ? upPrice : downPrice;
+        fallbackReason = "cheapest side";
+      }
+      
+      // Validate fallback price, if bad try other side
+      if (!fallbackPrice || fallbackPrice > 0.45 || fallbackPrice <= 0.08) {
+        fallbackSide = fallbackSide === "Up" ? "Down" : "Up";
+        fallbackPrice = fallbackSide === "Up" ? upPrice : downPrice;
+        fallbackReason = "other side (price fix)";
+      }
+      
+      const fallbackDir = fallbackSide === "Up" ? "LONG" : "SHORT";
+      const streakConf = streak.length >= 2 ? 60 : 55; // Higher conf with streak data
+      
+      if (fallbackPrice && fallbackPrice <= 0.45 && fallbackPrice > 0.08) {
+        console.log(`[Strategy] 🔸 FALLBACK: Weak signal (diff ${scoreDiff} < ${requiredDiff}) → ${fallbackDir} ${fallbackSide} @ $${fallbackPrice.toFixed(3)} (${fallbackReason}) | Streak: ${streak.length}x ${streak.direction || 'none'}`);
         console.log(`[Strategy] ══════════════════════════════════════`);
         return {
           shouldTrade: true,
           direction: fallbackDir,
-          targetOutcome: cheaperSide,
-          confidence: 55,
-          edge: Math.max(0.50 - cheaperPrice, 0.02),
-          marketPrice: cheaperPrice,
-          modelProb: 0.52,
-          strategy: "FALLBACK",
-          bullScore, bearScore, signals: [...signals, `FALLBACK:cheapest_side`],
-          reason: `FALLBACK ${fallbackDir} @ $${cheaperPrice.toFixed(2)} (weak signal, mandatory trade)`
+          targetOutcome: fallbackSide,
+          confidence: streakConf,
+          edge: Math.max(0.50 - fallbackPrice, 0.02),
+          marketPrice: fallbackPrice,
+          modelProb: streakConf / 100,
+          strategy: streak.length >= 2 ? "FALLBACK_STREAK" : "FALLBACK",
+          bullScore, bearScore, signals: [...signals, `FALLBACK:${fallbackReason}`, `STREAK:${streak.length}x${streak.direction || 'none'}`],
+          reason: `FALLBACK ${fallbackDir} @ $${fallbackPrice.toFixed(2)} (${fallbackReason})`
         };
       }
       
