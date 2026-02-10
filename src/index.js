@@ -942,7 +942,7 @@ import { createServer } from "node:http";
 const PORT = process.env.PORT || 3000;
 const server = createServer((req, res) => {
   const url = new URL(req.url, `http://localhost:${PORT}`);
-  const path = url.pathname;
+  const urlPath = url.pathname;
   
   // CORS headers
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -956,13 +956,13 @@ const server = createServer((req, res) => {
   }
   
   try {
-    if (path === '/stats') {
+    if (urlPath === '/stats') {
       // Current trading stats
       const stats = getTradingStats();
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(stats, null, 2));
     }
-    else if (path === '/history') {
+    else if (urlPath === '/history') {
       // Full trade history from journal.json
       const journalPath = path.join(process.cwd(), 'logs', 'journal.json');
       if (fs.existsSync(journalPath)) {
@@ -974,7 +974,7 @@ const server = createServer((req, res) => {
         res.end(JSON.stringify({ error: 'No trade history found' }));
       }
     }
-    else if (path === '/pnl') {
+    else if (urlPath === '/pnl') {
       // P&L state from positionTracker
       const pnlPath = path.join(process.cwd(), 'logs', 'pnl.json');
       if (fs.existsSync(pnlPath)) {
@@ -986,7 +986,7 @@ const server = createServer((req, res) => {
         res.end(JSON.stringify({ error: 'No P&L data found' }));
       }
     }
-    else if (path === '/csv') {
+    else if (urlPath === '/csv') {
       // Download trades.csv
       const csvPath = path.join(process.cwd(), 'logs', 'trades.csv');
       if (fs.existsSync(csvPath)) {
@@ -1000,7 +1000,7 @@ const server = createServer((req, res) => {
         res.end(JSON.stringify({ error: 'No CSV file found' }));
       }
     }
-    else if (path === '/' || path === '/health') {
+    else if (urlPath === '/' || urlPath === '/health') {
       // Simple health check with links
       const html = `
 <!DOCTYPE html>
