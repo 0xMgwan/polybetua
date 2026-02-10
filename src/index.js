@@ -934,4 +934,108 @@ async function main() {
   }
 }
 
+// ═══════════════════════════════════════════════════════════════
+// HTTP API SERVER — view trade history and stats from browser
+// ═══════════════════════════════════════════════════════════════
+import { createServer } from "node:http";
+
+const PORT = process.env.PORT || 3000;
+const server = createServer((req, res) => {
+  const url = new URL(req.url, `http://localhost:${PORT}`);
+  const path = url.pathname;
+  
+  // CORS headers
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  
+  if (req.method === 'OPTIONS') {
+    res.writeHead(200);
+    res.end();
+    return;
+  }
+  
+  try {
+    if (path === '/stats') {
+      // Current trading stats
+      const stats = getTradingStats();
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(stats, null, 2));
+    }
+    else if (path === '/history') {
+      // Full trade history from journal.json
+      const journalPath = path.join(process.cwd(), 'logs', 'journal.json');
+      if (fs.existsSync(journalPath)) {
+        const journal = JSON.parse(fs.readFileSync(journalPath, 'utf8'));
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(journal, null, 2));
+      } else {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'No trade history found' }));
+      }
+    }
+    else if (path === '/pnl') {
+      // P&L state from positionTracker
+      const pnlPath = path.join(process.cwd(), 'logs', 'pnl.json');
+      if (fs.existsSync(pnlPath)) {
+        const pnl = JSON.parse(fs.readFileSync(pnlPath, 'utf8'));
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(pnl, null, 2));
+      } else {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'No P&L data found' }));
+      }
+    }
+    else if (path === '/csv') {
+      // Download trades.csv
+      const csvPath = path.join(process.cwd(), 'logs', 'trades.csv');
+      if (fs.existsSync(csvPath)) {
+        res.writeHead(200, { 
+          'Content-Type': 'text/csv',
+          'Content-Disposition': 'attachment; filename="trades.csv"'
+        });
+        res.end(fs.readFileSync(csvPath, 'utf8'));
+      } else {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'No CSV file found' }));
+      }
+    }
+    else if (path === '/' || path === '/health') {
+      // Simple health check with links
+      const html = `
+<!DOCTYPE html>
+<html>
+<head><title>BTC 15m Trading Bot</title></head>
+<body>
+<h1>🤖 BTC 15m Trading Bot</h1>
+<ul>
+  <li><a href="/stats">📊 Current Stats</a></li>
+  <li><a href="/history">📜 Trade History</a></li>
+  <li><a href="/pnl">💰 P&L State</a></li>
+  <li><a href="/csv">📥 Download CSV</a></li>
+</ul>
+<p>Last updated: ${new Date().toISOString()}</p>
+</body>
+</html>`;
+      res.writeHead(200, { 'Content-Type': 'text/html' });
+      res.end(html);
+    }
+    else {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Not found' }));
+    }
+  } catch (err) {
+    res.writeHead(500, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: err.message }));
+  }
+});
+
+server.listen(PORT, () => {
+  console.log(`\n[API] 🌐 HTTP server running on http://localhost:${PORT}`);
+  console.log(`[API] 📊 Stats: http://localhost:${PORT}/stats`);
+  console.log(`[API] 📜 History: http://localhost:${PORT}/history`);
+  console.log(`[API] 💰 P&L: http://localhost:${PORT}/pnl`);
+  console.log(`[API] 📥 CSV: http://localhost:${PORT}/csv`);
+});
+
 main();
