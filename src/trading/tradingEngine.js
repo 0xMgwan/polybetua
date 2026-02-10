@@ -42,6 +42,13 @@ export class TradingEngine {
     this.MIN_BUY_COOLDOWN = 30000;   // 30s between buys
     this.EXIT_MINUTES_LEFT = 2;      // Emergency exit with 2 min left
     
+    // CONVICTION TRADE parameters (directional big wins)
+    this.CONVICTION_THRESHOLD = 0.30;  // Token must be ≤ 30¢
+    this.CONVICTION_SCORE_DIFF = 5;    // Indicators must agree by 5+ points
+    this.CONVICTION_SIZE_DOLLARS = 3;  // $3 per conviction trade (bigger bet)
+    this.CONVICTION_MIN_LEFT = 3;      // Need ≥ 3 min left in candle
+    this.lastConvictionSlug = null;    // Only 1 conviction per candle
+    
     this.lastBuyTime = 0;
   }
 
@@ -211,6 +218,14 @@ export class TradingEngine {
       }
 
       if (!buyOutcome) {
+        // ─── CONVICTION TRADE: No dip found, try directional bet ───
+        // Only when indicators strongly agree AND token is cheap
+        const convictionSignal = this._checkConviction(upPrice, downPrice, slug, minLeft, indicators);
+        if (convictionSignal) {
+          console.log(`[DipArb] ══════════════════════════════════════`);
+          return convictionSignal;
+        }
+        
         console.log(`[DipArb] ⏳ Waiting for dip: Up $${upPrice.toFixed(3)} / Down $${downPrice.toFixed(3)} > $${this.LEG1_THRESHOLD}`);
         console.log(`[DipArb] ══════════════════════════════════════`);
         return { shouldTrade: false, reason: `Waiting for dip (Up $${upPrice.toFixed(2)}, Down $${downPrice.toFixed(2)} > $${this.LEG1_THRESHOLD})` };
@@ -305,6 +320,92 @@ export class TradingEngine {
   }
 
   // ═══════════════════════════════════════════════════════════════
+  // CONVICTION TRADE — directional bet when indicators strongly agree
+  // Fires when no DipArb dip is available but a strong signal exists
+  // ═══════════════════════════════════════════════════════════════
+  _checkConviction(upPrice, downPrice, slug, minLeft, indicators) {
+    // Only 1 conviction trade per candle
+    if (this.lastConvictionSlug === slug) return null;
+    
+    // Need enough time
+    if (minLeft < this.CONVICTION_MIN_LEFT) return null;
+    
+    // Need indicator data
+    if (!indicators || !indicators.lastPrice) return null;
+    
+    // Score the direction using available indicators
+    let bullScore = 0;
+    let bearScore = 0;
+    
+    // Price vs VWAP (weight 3)
+    if (indicators.priceVsVwap !== undefined) {
+      if (indicators.priceVsVwap > 0) bullScore += 3;
+      if (indicators.priceVsVwap < 0) bearScore += 3;
+    }
+    
+    // VWAP slope (weight 3)
+    if (indicators.vwapSlope !== undefined && indicators.vwapSlope !== null) {
+      if (indicators.vwapSlope > 0) bullScore += 3;
+      if (indicators.vwapSlope < 0) bearScore += 3;
+    }
+    
+    // MACD histogram (weight 2)
+    if (indicators.macdHist !== null && indicators.macdHistDelta !== null) {
+      if (indicators.macdHist > 0 && indicators.macdHistDelta > 0) bullScore += 2;
+      if (indicators.macdHist < 0 && indicators.macdHistDelta < 0) bearScore += 2;
+    }
+    
+    // Heiken Ashi (weight 2)
+    if (indicators.heikenColor && indicators.heikenCount >= 2) {
+      if (indicators.heikenColor === "green") bullScore += 2;
+      if (indicators.heikenColor === "red") bearScore += 2;
+    }
+    
+    // Delta momentum (weight 1 each)
+    if (indicators.delta1m > 0) bullScore += 1;
+    if (indicators.delta1m < 0) bearScore += 1;
+    if (indicators.delta3m > 0) bullScore += 1;
+    if (indicators.delta3m < 0) bearScore += 1;
+    
+    const scoreDiff = Math.abs(bullScore - bearScore);
+    const isBull = bullScore > bearScore;
+    const buyOutcome = isBull ? "Up" : "Down";
+    const buyPrice = isBull ? upPrice : downPrice;
+    
+    // Must meet score threshold
+    if (scoreDiff < this.CONVICTION_SCORE_DIFF) {
+      console.log(`[Conviction] Score: Bull ${bullScore} vs Bear ${bearScore} (diff ${scoreDiff} < ${this.CONVICTION_SCORE_DIFF}) — not strong enough`);
+      return null;
+    }
+    
+    // Token must be cheap enough for good R:R
+    if (buyPrice > this.CONVICTION_THRESHOLD) {
+      console.log(`[Conviction] ${buyOutcome} @ $${buyPrice.toFixed(3)} > $${this.CONVICTION_THRESHOLD} — too expensive`);
+      return null;
+    }
+    
+    const rr = ((1 - buyPrice) / buyPrice).toFixed(1);
+    console.log(`[Conviction] 🎯 STRONG SIGNAL: ${buyOutcome} @ $${buyPrice.toFixed(3)} | Bull ${bullScore} vs Bear ${bearScore} (diff ${scoreDiff}) | R:R ${rr}:1`);
+    
+    return {
+      shouldTrade: true,
+      direction: isBull ? "LONG" : "SHORT",
+      targetOutcome: buyOutcome,
+      confidence: 90,
+      edge: (1.0 - buyPrice) * (scoreDiff / 12),
+      marketPrice: buyPrice,
+      modelProb: 0.90,
+      strategy: "CONVICTION",
+      isLeg2: false,
+      isConviction: true,
+      leg1Shares: null,
+      bullScore, bearScore,
+      signals: [`conviction:${buyOutcome}@$${buyPrice.toFixed(3)}`, `score:${bullScore}v${bearScore}`],
+      reason: `CONVICTION: ${buyOutcome} @ $${buyPrice.toFixed(3)} | Score ${bullScore}v${bearScore} | R:R ${rr}:1`
+    };
+  }
+
+  // ═══════════════════════════════════════════════════════════════
   // EXECUTE TRADE — handle Leg1, Leg2, and Exit
   // ═══════════════════════════════════════════════════════════════
   async executeTrade(signal, marketData, priceToBeat = null) {
@@ -372,6 +473,10 @@ export class TradingEngine {
       if (signal.isLeg2 && signal.leg1Shares) {
         // Leg2: match Leg1 shares for perfect hedge
         size = signal.leg1Shares;
+      } else if (signal.isConviction) {
+        // Conviction: $3 directional bet
+        size = Math.floor(this.CONVICTION_SIZE_DOLLARS / price);
+        if (size < MIN_SHARES) size = MIN_SHARES;
       } else {
         // Leg1: buy $2 worth
         size = Math.floor(this.LEG1_SIZE_DOLLARS / price);
@@ -395,54 +500,61 @@ export class TradingEngine {
       
       console.log(`[DipArb] ✅ Order: ${signal.strategy} ${signal.targetOutcome} ${size}x @ $${price.toFixed(3)} = $${maxCost.toFixed(2)}`);
 
-      // Update window state
-      const window = this.currentWindow;
-      if (window) {
-        if (signal.targetOutcome === "Up") {
-          window.qtyUp += size;
-          window.costUp += maxCost;
-        } else {
-          window.qtyDown += size;
-          window.costDown += maxCost;
-        }
-        window.buys.push({
-          outcome: signal.targetOutcome,
-          price, size, cost: maxCost,
-          orderId: order.orderID,
-          leg: signal.isLeg2 ? "leg2" : "leg1",
-          timestamp: Date.now()
-        });
+      // Update state based on trade type
+      if (signal.isConviction) {
+        // Conviction trades are standalone — don't touch window state
+        this.lastConvictionSlug = marketData.marketSlug;
+        console.log(`[Conviction] ✅ Placed: ${size}x ${signal.targetOutcome} @ $${price.toFixed(3)} = $${maxCost.toFixed(2)}`);
+      } else {
+        // Update window state for DipArb trades
+        const window = this.currentWindow;
+        if (window) {
+          if (signal.targetOutcome === "Up") {
+            window.qtyUp += size;
+            window.costUp += maxCost;
+          } else {
+            window.qtyDown += size;
+            window.costDown += maxCost;
+          }
+          window.buys.push({
+            outcome: signal.targetOutcome,
+            price, size, cost: maxCost,
+            orderId: order.orderID,
+            leg: signal.isLeg2 ? "leg2" : "leg1",
+            timestamp: Date.now()
+          });
 
-        // Update phase and leg info
-        if (!signal.isLeg2) {
-          // Leg1 filled
-          window.phase = "leg1_filled";
-          window.leg1 = {
-            side: signal.targetOutcome,
-            qty: size,
-            cost: maxCost,
-            avgPrice: price,
-            tokenId,
-            timestamp: Date.now()
-          };
-          console.log(`[DipArb] Phase → leg1_filled: ${size}x ${signal.targetOutcome} @ $${price.toFixed(3)}`);
-        } else {
-          // Leg2 filled — pair complete!
-          window.phase = "completed";
-          window.leg2 = {
-            side: signal.targetOutcome,
-            qty: size,
-            cost: maxCost,
-            avgPrice: price,
-            tokenId,
-            timestamp: Date.now()
-          };
-          const totalSpent = window.costUp + window.costDown;
-          const pairs = Math.min(window.qtyUp, window.qtyDown);
-          const pairCost = this._calcPairCost(window);
-          const profit = pairs * 1.0 - totalSpent;
-          window.locked = profit > 0;
-          console.log(`[DipArb] 🎯 PAIR COMPLETE! ${pairs} pairs | Cost: $${pairCost?.toFixed(3)} | Spent: $${totalSpent.toFixed(2)} | Guaranteed: $${profit.toFixed(2)}`);
+          // Update phase and leg info
+          if (!signal.isLeg2) {
+            // Leg1 filled
+            window.phase = "leg1_filled";
+            window.leg1 = {
+              side: signal.targetOutcome,
+              qty: size,
+              cost: maxCost,
+              avgPrice: price,
+              tokenId,
+              timestamp: Date.now()
+            };
+            console.log(`[DipArb] Phase → leg1_filled: ${size}x ${signal.targetOutcome} @ $${price.toFixed(3)}`);
+          } else {
+            // Leg2 filled — pair complete!
+            window.phase = "completed";
+            window.leg2 = {
+              side: signal.targetOutcome,
+              qty: size,
+              cost: maxCost,
+              avgPrice: price,
+              tokenId,
+              timestamp: Date.now()
+            };
+            const totalSpent = window.costUp + window.costDown;
+            const pairs = Math.min(window.qtyUp, window.qtyDown);
+            const pairCost = this._calcPairCost(window);
+            const profit = pairs * 1.0 - totalSpent;
+            window.locked = profit > 0;
+            console.log(`[DipArb] 🎯 PAIR COMPLETE! ${pairs} pairs | Cost: $${pairCost?.toFixed(3)} | Spent: $${totalSpent.toFixed(2)} | Guaranteed: $${profit.toFixed(2)}`);
+          }
         }
       }
 
