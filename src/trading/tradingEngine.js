@@ -120,24 +120,35 @@ export class TradingEngine {
     console.log(`[Strategy] Up: $${upPrice?.toFixed(3) || 'N/A'} | Down: $${downPrice?.toFixed(3) || 'N/A'} | Combined: $${combinedPrice?.toFixed(3) || 'N/A'}`);
 
     // ─── STRATEGY 1: ARB / HEDGE ───────────────────────────────
-    // If Up + Down < 97¢, buy the cheaper side for guaranteed +EV
+    // If Up + Down < 97¢, there's a pricing inefficiency.
+    // But DON'T blindly buy cheaper side — use indicators to pick direction.
+    // Only take if indicators support the cheaper side.
     if (combinedPrice !== null && combinedPrice < 0.97) {
       const cheaperSide = upPrice <= downPrice ? "Up" : "Down";
       const cheaperPrice = Math.min(upPrice, downPrice);
-      console.log(`[Strategy] ⚡ ARB DETECTED: Combined $${combinedPrice.toFixed(3)} < $0.97 — buying ${cheaperSide} @ $${cheaperPrice.toFixed(3)}`);
       
-      return {
-        shouldTrade: true,
-        direction: cheaperSide === "Up" ? "LONG" : "SHORT",
-        targetOutcome: cheaperSide,
-        confidence: 95,
-        edge: (1 - combinedPrice),
-        marketPrice: cheaperPrice,
-        modelProb: 0.95,
-        strategy: "ARB",
-        bullScore: 0, bearScore: 0, signals: [`ARB:combined=$${combinedPrice.toFixed(3)}`],
-        reason: `ARB: ${cheaperSide} @ $${cheaperPrice.toFixed(3)} (combined $${combinedPrice.toFixed(3)})`
-      };
+      // Quick indicator check: do indicators support the cheaper side?
+      const quickBull = (indicators.delta1m > 0 ? 1 : 0) + (indicators.delta3m > 0 ? 1 : 0) + (indicators.macdHist > 0 ? 1 : 0);
+      const quickBear = (indicators.delta1m < 0 ? 1 : 0) + (indicators.delta3m < 0 ? 1 : 0) + (indicators.macdHist < 0 ? 1 : 0);
+      const indicatorSide = quickBull > quickBear ? "Up" : quickBear > quickBull ? "Down" : null;
+      
+      if (indicatorSide === cheaperSide) {
+        console.log(`[Strategy] ⚡ ARB + INDICATORS AGREE: Combined $${combinedPrice.toFixed(3)} < $0.97 — buying ${cheaperSide} @ $${cheaperPrice.toFixed(3)} (indicators: ${quickBull}B/${quickBear}S)`);
+        return {
+          shouldTrade: true,
+          direction: cheaperSide === "Up" ? "LONG" : "SHORT",
+          targetOutcome: cheaperSide,
+          confidence: 90,
+          edge: (1 - combinedPrice),
+          marketPrice: cheaperPrice,
+          modelProb: 0.90,
+          strategy: "ARB",
+          bullScore: quickBull, bearScore: quickBear, signals: [`ARB:combined=$${combinedPrice.toFixed(3)}`, `indicators:${quickBull}B/${quickBear}S`],
+          reason: `ARB: ${cheaperSide} @ $${cheaperPrice.toFixed(3)} (combined $${combinedPrice.toFixed(3)}, indicators agree)`
+        };
+      } else {
+        console.log(`[Strategy] ⚠ ARB DETECTED ($${combinedPrice.toFixed(3)}) but indicators DISAGREE — cheaper=${cheaperSide}, indicators=${indicatorSide || 'NEUTRAL'} (${quickBull}B/${quickBear}S) — SKIP`);
+      }
     }
 
     // ─── STRATEGY 2: CHEAP TOKEN HARVESTING ────────────────────
@@ -328,11 +339,11 @@ export class TradingEngine {
     // Tiered score requirements — achievable but still selective
     let requiredDiff;
     if (marketPrice < 0.30) {
-      requiredDiff = 2; // Cheap: great R:R, light signal OK
+      requiredDiff = 4; // Cheap: good R:R but still need solid consensus
     } else if (marketPrice < 0.40) {
-      requiredDiff = 3; // Medium: need decent signal
+      requiredDiff = 5; // Medium: need strong signal
     } else {
-      requiredDiff = 4; // Expensive: need strong signal
+      requiredDiff = 6; // Expensive: need overwhelming signal
     }
 
     if (scoreDiff < requiredDiff) {
