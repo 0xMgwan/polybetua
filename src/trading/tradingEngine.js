@@ -32,7 +32,7 @@ export class TradingEngine {
     
     // Pair trading parameters
     this.CHEAP_THRESHOLD = 0.35;     // First side: buy when ≤ 35¢
-    this.SECOND_SIDE_THRESHOLD = 0.45; // Second side: up to 45¢ to complete pair (pair cost ≤ 80¢)
+    this.SECOND_SIDE_THRESHOLD = 0.40; // Second side: up to 40¢ to complete pair (pair cost ≤ 75¢)
     this.IDEAL_THRESHOLD = 0.28;     // Ideal entry: ≤ 28¢
     this.MAX_WINDOW_SPEND = 5;       // Max $5 per window (split across buys)
     this.BUY_SIZE_DOLLARS = 2;       // $2 per individual buy
@@ -223,14 +223,17 @@ export class TradingEngine {
     const downCooldownOk = (now - this.lastDownBuyTime) >= this.MIN_BUY_COOLDOWN;
 
     // Force buy the missing side if we have one side already
+    let isBalanceTrade = false;
     if (window.qtyUp > 0 && window.qtyDown === 0 && downCheap && downCooldownOk) {
       buyOutcome = "Down";
       buyPrice = downPrice;
       buyReason = `MUST BALANCE: have Up but no Down`;
+      isBalanceTrade = true;
     } else if (window.qtyDown > 0 && window.qtyUp === 0 && upCheap && upCooldownOk) {
       buyOutcome = "Up";
       buyPrice = upPrice;
       buyReason = `MUST BALANCE: have Down but no Up`;
+      isBalanceTrade = true;
     } else if (upCheap && downCheap) {
       // Both cheap — buy the side we have less of
       if (window.qtyUp <= window.qtyDown && upCooldownOk) {
@@ -295,6 +298,7 @@ export class TradingEngine {
     console.log(`[PairTrade] ✅ BUY ${buyOutcome} @ $${buyPrice.toFixed(3)} | R:R ${rr}:1 | ${buyReason} | PairCost: ${pairCostStr}`);
     console.log(`[PairTrade] ══════════════════════════════════════`);
 
+    const stratLabel = isBalanceTrade ? 'BALANCE' : (buyPrice <= this.IDEAL_THRESHOLD ? 'IDEAL' : 'CHEAP');
     return {
       shouldTrade: true,
       direction: buyOutcome === "Up" ? "LONG" : "SHORT",
@@ -303,7 +307,8 @@ export class TradingEngine {
       edge: 1.0 - combinedPrice,
       marketPrice: buyPrice,
       modelProb: 0.85,
-      strategy: `PAIR_${buyPrice <= this.IDEAL_THRESHOLD ? 'IDEAL' : 'CHEAP'}`,
+      strategy: `PAIR_${stratLabel}`,
+      isBalanceTrade,
       bullScore: 0,
       bearScore: 0,
       signals: [`pair:${buyOutcome}@$${buyPrice.toFixed(3)}`, buyReason],
@@ -331,8 +336,8 @@ export class TradingEngine {
       const side = "BUY";
       const price = Math.min(0.95, signal.marketPrice + 0.003);
       
-      // Smaller buys for pair trading ($2 per buy)
-      const maxOrderDollars = this.BUY_SIZE_DOLLARS;
+      // $2 for cheap buys, $1 for balance buys (second side = higher risk)
+      const maxOrderDollars = signal.isBalanceTrade ? 1 : this.BUY_SIZE_DOLLARS;
       const MIN_SHARES = 5;
       
       let size = Math.floor(maxOrderDollars / price);
