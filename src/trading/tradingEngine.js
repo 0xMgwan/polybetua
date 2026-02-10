@@ -35,7 +35,7 @@ export class TradingEngine {
     
     // Strategy parameters (inspired by MrFadiAi/Polymarket-bot DipArb)
     this.LEG1_THRESHOLD = 0.25;      // Leg1: buy when ≤ 25¢ (cheap side)
-    this.SUM_TARGET = 0.92;          // Only buy Leg2 if Leg1+Leg2 < 92¢ (8%+ guaranteed profit)
+    this.SUM_TARGET = 0.95;          // Only buy Leg2 if Leg1+Leg2 < 95¢ (5%+ guaranteed profit)
     this.LEG1_SIZE_DOLLARS = 2;      // $2 for Leg1
     this.MAX_WINDOW_SPEND = 5;       // Max $5 per window
     this.MIN_BUY_COOLDOWN = 30000;   // 30s between buys
