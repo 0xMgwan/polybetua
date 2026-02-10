@@ -88,8 +88,7 @@ export class TradingEngine {
       return { shouldTrade: false, reason: "Missing prediction or market data" };
     }
 
-    // RULE #4: Enter in first half of candle only (min 1-8)
-    // Late entries (min 9+) = stale signal, worse prices, no time to recover
+    // RULE #4: Enter early for freshest signals and best prices (min 1-6)
     if (marketData.marketEndTime) {
       const msLeft = marketData.marketEndTime - now;
       const minLeft = msLeft / 60000;
@@ -98,8 +97,8 @@ export class TradingEngine {
       if (minLeft > 14) {
         return { shouldTrade: false, reason: `Too early (min ${candleMinute}/15) — waiting for candle start` };
       }
-      if (minLeft < 7) {
-        return { shouldTrade: false, reason: `Too late (min ${candleMinute}/15, ${minLeft.toFixed(1)} min left) — stale signal, bad prices` };
+      if (minLeft < 9) {
+        return { shouldTrade: false, reason: `Too late (min ${candleMinute}/15, ${minLeft.toFixed(1)} min left) — stale signal` };
       }
       
       console.log(`[Timing] Candle minute: ${candleMinute}/15 | ${minLeft.toFixed(1)} min left`);
@@ -119,103 +118,20 @@ export class TradingEngine {
     console.log(`[Strategy] ══════════════════════════════════════`);
     console.log(`[Strategy] Up: $${upPrice?.toFixed(3) || 'N/A'} | Down: $${downPrice?.toFixed(3) || 'N/A'} | Combined: $${combinedPrice?.toFixed(3) || 'N/A'}`);
 
-    // ─── STRATEGY 1: ARB / HEDGE ───────────────────────────────
-    // If Up + Down < 97¢, there's a pricing inefficiency.
-    // But DON'T blindly buy cheaper side — use indicators to pick direction.
-    // Only take if indicators support the cheaper side.
-    if (combinedPrice !== null && combinedPrice < 0.97) {
-      const cheaperSide = upPrice <= downPrice ? "Up" : "Down";
-      const cheaperPrice = Math.min(upPrice, downPrice);
-      
-      // Quick indicator check: do indicators support the cheaper side?
-      const quickBull = (indicators.delta1m > 0 ? 1 : 0) + (indicators.delta3m > 0 ? 1 : 0) + (indicators.macdHist > 0 ? 1 : 0);
-      const quickBear = (indicators.delta1m < 0 ? 1 : 0) + (indicators.delta3m < 0 ? 1 : 0) + (indicators.macdHist < 0 ? 1 : 0);
-      const indicatorSide = quickBull > quickBear ? "Up" : quickBear > quickBull ? "Down" : null;
-      
-      if (indicatorSide === cheaperSide) {
-        console.log(`[Strategy] ⚡ ARB + INDICATORS AGREE: Combined $${combinedPrice.toFixed(3)} < $0.97 — buying ${cheaperSide} @ $${cheaperPrice.toFixed(3)} (indicators: ${quickBull}B/${quickBear}S)`);
-        return {
-          shouldTrade: true,
-          direction: cheaperSide === "Up" ? "LONG" : "SHORT",
-          targetOutcome: cheaperSide,
-          confidence: 90,
-          edge: (1 - combinedPrice),
-          marketPrice: cheaperPrice,
-          modelProb: 0.90,
-          strategy: "ARB",
-          bullScore: quickBull, bearScore: quickBear, signals: [`ARB:combined=$${combinedPrice.toFixed(3)}`, `indicators:${quickBull}B/${quickBear}S`],
-          reason: `ARB: ${cheaperSide} @ $${cheaperPrice.toFixed(3)} (combined $${combinedPrice.toFixed(3)}, indicators agree)`
-        };
-      } else {
-        console.log(`[Strategy] ⚠ ARB DETECTED ($${combinedPrice.toFixed(3)}) but indicators DISAGREE — cheaper=${cheaperSide}, indicators=${indicatorSide || 'NEUTRAL'} (${quickBull}B/${quickBear}S) — SKIP`);
-      }
-    }
+    // ═══════════════════════════════════════════════════════════════
+    // R:R FIRST STRATEGY — exploit cheap mispricing, not direction
+    //
+    // Key insight: predicting BTC direction on 15m is ~50/50.
+    // But a 25¢ token pays $1 on win = 3:1 R:R.
+    // At 3:1 R:R, we only need >25% accuracy to profit.
+    // At 2:1 R:R (33¢), we need >33% accuracy.
+    // At 1:1 R:R (50¢), we need >50% accuracy (coin flip = lose to fees).
+    //
+    // So: ONLY buy cheap tokens where R:R gives us a mathematical edge.
+    // Use indicators only to pick which cheap side to buy.
+    // ═══════════════════════════════════════════════════════════════
 
-    // ─── STRATEGY 2: CHEAP TOKEN HARVESTING ────────────────────
-    // Buy cheap tokens when momentum supports the direction
-    // Need: delta1m + delta3m agree AND MACD supports
-    const cheapThreshold = 0.35;
-    const hasMomentumData = indicators.delta1m !== undefined && indicators.delta3m !== undefined && indicators.macdHist !== undefined;
-    
-    if (hasMomentumData && upPrice && upPrice < cheapThreshold && upPrice > 0.08) {
-      const deltasAgree = indicators.delta1m > 0 && indicators.delta3m > 0;
-      const macdSupports = indicators.macdHist > 0;
-      const momentumOK = deltasAgree && macdSupports;
-      
-      if (momentumOK) {
-        console.log(`[Strategy] 🎯 CHEAP UP: $${upPrice.toFixed(3)} < $${cheapThreshold} + momentum OK (deltas:${deltasAgree}, MACD:${macdSupports})`);
-        return {
-          shouldTrade: true,
-          direction: "LONG",
-          targetOutcome: "Up",
-          confidence: 65,
-          edge: 0.50 - upPrice,
-          marketPrice: upPrice,
-          modelProb: 0.55,
-          strategy: "CHEAP_TOKEN",
-          bullScore: 0, bearScore: 0, signals: [`CHEAP_UP:$${upPrice.toFixed(3)}`, `deltas:${deltasAgree}`, `MACD:${macdSupports}`],
-          reason: `CHEAP Up @ $${upPrice.toFixed(3)} (momentum supports)`
-        };
-      } else {
-        console.log(`[Strategy] ⚠ CHEAP UP $${upPrice.toFixed(3)} BLOCKED — momentum against (Δ1m:${indicators.delta1m?.toFixed(2)}, Δ3m:${indicators.delta3m?.toFixed(2)}, MACD:${indicators.macdHist?.toFixed(2)})`);
-      }
-    }
-    if (hasMomentumData && downPrice && downPrice < cheapThreshold && downPrice > 0.08) {
-      const deltasAgree = indicators.delta1m < 0 && indicators.delta3m < 0;
-      const macdSupports = indicators.macdHist < 0;
-      const momentumOK = deltasAgree && macdSupports;
-      
-      if (momentumOK) {
-        console.log(`[Strategy] 🎯 CHEAP DOWN: $${downPrice.toFixed(3)} < $${cheapThreshold} + momentum OK (deltas:${deltasAgree}, MACD:${macdSupports})`);
-        return {
-          shouldTrade: true,
-          direction: "SHORT",
-          targetOutcome: "Down",
-          confidence: 65,
-          edge: 0.50 - downPrice,
-          marketPrice: downPrice,
-          modelProb: 0.55,
-          strategy: "CHEAP_TOKEN",
-          bullScore: 0, bearScore: 0, signals: [`CHEAP_DOWN:$${downPrice.toFixed(3)}`, `deltas:${deltasAgree}`, `MACD:${macdSupports}`],
-          reason: `CHEAP Down @ $${downPrice.toFixed(3)} (momentum supports)`
-        };
-      } else {
-        console.log(`[Strategy] ⚠ CHEAP DOWN $${downPrice.toFixed(3)} BLOCKED — momentum against (Δ1m:${indicators.delta1m?.toFixed(2)}, Δ3m:${indicators.delta3m?.toFixed(2)}, MACD:${indicators.macdHist?.toFixed(2)})`);
-      }
-    }
-
-    // ─── STRATEGY 3: MEAN-REVERSION (DISABLED) ─────────────────
-    // Disabled: too risky on 15m BTC, trends continue
-    if (ptb && indicators.lastPrice) {
-      const currentMove = ((indicators.lastPrice - ptb) / ptb) * 100;
-      if (Math.abs(currentMove) > 0.25) {
-        console.log(`[Strategy] ⚠ Sharp move ${currentMove.toFixed(3)}% — NOT fading (disabled)`);
-      }
-    }
-
-    // ─── STRATEGY 4: STRONG MOMENTUM (indicator consensus) ─────
-    // Only take momentum trades when indicators OVERWHELMINGLY agree
-    // Key learning: losses come from expensive tokens with conflicting signals
+    // ─── INDICATOR SCORING ─────────────────────────────────────
     let bullScore = 0;
     let bearScore = 0;
     const signals = [];
@@ -284,26 +200,11 @@ export class TradingEngine {
     console.log(`[Strategy] BULL: ${bullScore} | BEAR: ${bearScore} | Diff: ${scoreDiff}`);
     console.log(`[Strategy] Signals: ${signals.join(', ')}`);
 
-    // ─── CONFLICT DETECTION ──────────────────────────────────────
-    // Check if any major indicator (MACD, VWAP, Heiken) disagrees with direction
-    const majorConflict = (macdDir !== 0 && macdDir !== winningDir) ||
-                          (vwapDir !== 0 && vwapDir !== winningDir) ||
-                          (heikenDir !== 0 && heikenDir !== winningDir);
     const majorsAligned = (macdDir === 0 || macdDir === winningDir) &&
                           (vwapDir === 0 || vwapDir === winningDir) &&
                           (heikenDir === 0 || heikenDir === winningDir);
 
-    if (majorConflict) {
-      const conflicting = [];
-      if (macdDir !== 0 && macdDir !== winningDir) conflicting.push("MACD");
-      if (vwapDir !== 0 && vwapDir !== winningDir) conflicting.push("VWAP");
-      if (heikenDir !== 0 && heikenDir !== winningDir) conflicting.push("Heiken");
-      console.log(`[Strategy] ⚠ CONFLICT: ${conflicting.join(', ')} disagree with ${winningDir > 0 ? 'BULL' : 'BEAR'} direction`);
-    }
-
-    // ─── PRICE-TIERED THRESHOLDS ─────────────────────────────────
-    // Cheaper tokens = more forgiving (good risk:reward even on coin-flip)
-    // Expensive tokens = need much stronger signal
+    // ─── DIRECTION & PRICE ─────────────────────────────────────
     let direction = winningDir > 0 ? "LONG" : "SHORT";
     let targetOutcome = direction === "LONG" ? "Up" : "Down";
     let marketPrice = direction === "LONG" ? upPrice : downPrice;
@@ -312,46 +213,43 @@ export class TradingEngine {
       return { shouldTrade: false, reason: "Invalid market price" };
     }
 
-    // Max price cap — 47¢ (above this, risk:reward is bad)
-    // NEVER flip to opposite side — that bets AGAINST our indicators
-    if (marketPrice > 0.47) {
-      console.log(`[Strategy] ⚠ Winning side ${targetOutcome} @ $${marketPrice.toFixed(3)} too expensive (>47¢) — SKIP (won't bet against indicators)`);
+    // ─── R:R GATE: Only trade cheap tokens ─────────────────────
+    // This is the KEY insight. On a ~50/50 market:
+    //   25¢ token → 3:1 R:R → need >25% accuracy → VERY profitable
+    //   33¢ token → 2:1 R:R → need >33% accuracy → profitable with edge
+    //   40¢ token → 1.5:1 R:R → need >40% accuracy → marginal
+    //   50¢ token → 1:1 R:R → need >50% accuracy → LOSING (fees eat you)
+    const MAX_ENTRY_PRICE = 0.38; // Max 38¢ = minimum 1.6:1 R:R
+
+    if (marketPrice > MAX_ENTRY_PRICE) {
+      console.log(`[Strategy] ⚠ ${targetOutcome} @ $${marketPrice.toFixed(3)} too expensive (>${MAX_ENTRY_PRICE}) — R:R too low, SKIP`);
       console.log(`[Strategy] ══════════════════════════════════════`);
-      return { shouldTrade: false, reason: `Winning side too expensive ($${marketPrice.toFixed(2)} > $0.47) — won't flip against indicators` };
+      return { shouldTrade: false, reason: `Price $${marketPrice.toFixed(2)} > $${MAX_ENTRY_PRICE} — R:R too low` };
     }
 
-    // ─── CONFLICT FILTER: Only block for expensive tokens ──────
-    // Very cheap tokens (<25¢) have good R:R even with some conflict
-    // Everything else needs majors aligned
-    if (majorConflict && marketPrice > 0.25) {
+    // ─── SIGNAL QUALITY GATE ───────────────────────────────────
+    // ALL 3 majors (MACD, VWAP, Heiken Ashi) must agree with direction
+    // This is the ONLY filter — but it's strict
+    if (!majorsAligned) {
       const conflicting = [];
       if (macdDir !== 0 && macdDir !== winningDir) conflicting.push("MACD");
       if (vwapDir !== 0 && vwapDir !== winningDir) conflicting.push("VWAP");
       if (heikenDir !== 0 && heikenDir !== winningDir) conflicting.push("Heiken");
-      console.log(`[Strategy] ⚠ CONFLICT at expensive price $${marketPrice.toFixed(3)}: ${conflicting.join(', ')} — SKIP`);
+      console.log(`[Strategy] ⚠ Majors NOT aligned: ${conflicting.join(', ')} disagree — SKIP`);
       console.log(`[Strategy] ══════════════════════════════════════`);
       return {
         shouldTrade: false,
-        reason: `Major conflict (${conflicting.join(', ')}) at expensive price $${marketPrice.toFixed(2)}`
+        reason: `Majors not aligned (${conflicting.join(', ')} disagree)`
       };
     }
 
-    // Tiered score requirements — achievable but still selective
-    let requiredDiff;
-    if (marketPrice < 0.30) {
-      requiredDiff = 4; // Cheap: good R:R but still need solid consensus
-    } else if (marketPrice < 0.40) {
-      requiredDiff = 5; // Medium: need strong signal
-    } else {
-      requiredDiff = 6; // Expensive: need overwhelming signal
-    }
-
-    if (scoreDiff < requiredDiff) {
-      console.log(`[Strategy] ⚠ Score diff ${scoreDiff} < ${requiredDiff} for $${marketPrice.toFixed(2)} tier — SKIP (no edge, no trade)`);
+    // Need minimum score diff of 6 — overwhelming consensus only
+    if (scoreDiff < 6) {
+      console.log(`[Strategy] ⚠ Score diff ${scoreDiff} < 6 — not enough consensus, SKIP`);
       console.log(`[Strategy] ══════════════════════════════════════`);
       return {
         shouldTrade: false,
-        reason: `Weak signal (diff ${scoreDiff} < ${requiredDiff} @ $${marketPrice.toFixed(2)})`
+        reason: `Weak consensus (diff ${scoreDiff} < 6)`
       };
     }
 
@@ -360,9 +258,10 @@ export class TradingEngine {
       return { shouldTrade: false, reason: `Spread too wide (${(marketData.spread * 100).toFixed(1)}% > 8%)` };
     }
 
+    // ─── TRADE! ────────────────────────────────────────────────
+    const rr = ((1 - marketPrice) / marketPrice).toFixed(1);
     const indicatorConf = (Math.max(bullScore, bearScore) / (bullScore + bearScore)) * 100;
-    const priceTier = marketPrice < 0.30 ? "CHEAP" : marketPrice < 0.40 ? "MID" : "PREMIUM";
-    console.log(`[Strategy] ✅ MOMENTUM [${priceTier}]: ${direction} ${targetOutcome} @ $${marketPrice.toFixed(3)} | Diff: ${scoreDiff}/${requiredDiff} | Conflicts: ${majorConflict ? 'YES' : 'NONE'}`);
+    console.log(`[Strategy] ✅ TRADE: ${direction} ${targetOutcome} @ $${marketPrice.toFixed(3)} | R:R ${rr}:1 | Score: ${bullScore}B/${bearScore}S (diff ${scoreDiff}) | Majors: ALL ALIGNED`);
     console.log(`[Strategy] ══════════════════════════════════════`);
 
     return {
@@ -373,9 +272,9 @@ export class TradingEngine {
       edge: Math.max((indicatorConf / 100) - marketPrice, 0.01),
       marketPrice,
       modelProb: indicatorConf / 100,
-      strategy: `MOMENTUM_${priceTier}`,
+      strategy: `RR_${marketPrice < 0.25 ? 'GREAT' : marketPrice < 0.33 ? 'GOOD' : 'OK'}`,
       bullScore, bearScore, signals,
-      reason: `MOMENTUM[${priceTier}] ${direction} ${bullScore}v${bearScore} @ $${marketPrice.toFixed(2)}`
+      reason: `R:R ${rr}:1 | ${direction} ${bullScore}v${bearScore} @ $${marketPrice.toFixed(2)} | Majors aligned`
     };
   }
 
