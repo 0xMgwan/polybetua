@@ -133,11 +133,6 @@ export function cleanupStalePositions() {
   tradingEngine.cleanupStalePositions();
 }
 
-export async function checkHedgeOpportunity(marketData) {
-  if (!tradingEngine) return null;
-  return tradingEngine.checkHedgeOpportunity(marketData);
-}
-
 export function getTradingStats() {
   if (!tradingEngine) {
     return null;
