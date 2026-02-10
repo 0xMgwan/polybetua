@@ -33,7 +33,7 @@ export class TradingEngine {
     // Pair trading parameters
     this.CHEAP_THRESHOLD = 0.35;     // Buy when a side is ≤ 35¢
     this.IDEAL_THRESHOLD = 0.28;     // Ideal entry: ≤ 28¢
-    this.MAX_WINDOW_SPEND = 8;       // Max $8 per window (split across buys)
+    this.MAX_WINDOW_SPEND = 5;       // Max $5 per window (split across buys)
     this.BUY_SIZE_DOLLARS = 2;       // $2 per individual buy
     this.MIN_BUY_COOLDOWN = 15000;   // 15s between buys (same side)
     this.PAIR_COST_TARGET = 0.985;   // Target: avg pair cost ≤ 98.5¢

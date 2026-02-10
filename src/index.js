@@ -821,7 +821,7 @@ async function main() {
         const stats = getTradingStats();
         const statusColor = tradingStatus.dryRun ? ANSI.yellow : ANSI.green;
         const statusText = tradingStatus.dryRun ? "DRY RUN" : "PAIR TRADING";
-        tradingLines.push(kv("TRADING:", `${statusColor}${statusText}${ANSI.reset} ${ANSI.dim}($2/buy, $8/window)${ANSI.reset}`));
+        tradingLines.push(kv("TRADING:", `${statusColor}${statusText}${ANSI.reset} ${ANSI.dim}($2/buy, $5/window)${ANSI.reset}`));
         
         if (stats) {
           // P&L Display
@@ -838,7 +838,7 @@ async function main() {
             const upStr = `${ANSI.green}${pw.qtyUp} Up ($${pw.costUp.toFixed(2)})${ANSI.reset}`;
             const downStr = `${ANSI.red}${pw.qtyDown} Down ($${pw.costDown.toFixed(2)})${ANSI.reset}`;
             tradingLines.push(kv("Window:", `${upStr} | ${downStr}`));
-            tradingLines.push(kv("Spent:", `$${pw.totalSpent.toFixed(2)} / $8.00 | Buys: ${pw.buys}`));
+            tradingLines.push(kv("Spent:", `$${pw.totalSpent.toFixed(2)} / $5.00 | Buys: ${pw.buys}`));
             
             if (pw.pairCost !== null) {
               const pcColor = pw.pairCost < 1.0 ? ANSI.green : ANSI.red;
