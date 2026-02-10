@@ -31,7 +31,8 @@ export class TradingEngine {
     this.windowHistory = [];    // Past windows for P&L tracking
     
     // Pair trading parameters
-    this.CHEAP_THRESHOLD = 0.35;     // Buy when a side is ≤ 35¢
+    this.CHEAP_THRESHOLD = 0.35;     // First side: buy when ≤ 35¢
+    this.SECOND_SIDE_THRESHOLD = 0.45; // Second side: up to 45¢ to complete pair (pair cost ≤ 80¢)
     this.IDEAL_THRESHOLD = 0.28;     // Ideal entry: ≤ 28¢
     this.MAX_WINDOW_SPEND = 5;       // Max $5 per window (split across buys)
     this.BUY_SIZE_DOLLARS = 2;       // $2 per individual buy
@@ -174,13 +175,21 @@ export class TradingEngine {
     console.log(`[PairTrade] Window: ${window.qtyUp} Up ($${window.costUp.toFixed(2)}) | ${window.qtyDown} Down ($${window.costDown.toFixed(2)}) | Total: $${totalSpent.toFixed(2)}`);
 
     // Find which side(s) are cheap enough to buy
-    const upCheap = upPrice <= this.CHEAP_THRESHOLD && upPrice > 0.05;
-    const downCheap = downPrice <= this.CHEAP_THRESHOLD && downPrice > 0.05;
+    // First side: must be ≤ 35¢ (cheap)
+    // Second side: can be up to 45¢ to complete the pair
+    const hasUp = window.qtyUp > 0;
+    const hasDown = window.qtyDown > 0;
+    const upThreshold = hasDown && !hasUp ? this.SECOND_SIDE_THRESHOLD : this.CHEAP_THRESHOLD;
+    const downThreshold = hasUp && !hasDown ? this.SECOND_SIDE_THRESHOLD : this.CHEAP_THRESHOLD;
+    const upCheap = upPrice <= upThreshold && upPrice > 0.05;
+    const downCheap = downPrice <= downThreshold && downPrice > 0.05;
 
     if (!upCheap && !downCheap) {
-      console.log(`[PairTrade] ⚠ Neither side cheap enough (Up $${upPrice.toFixed(3)}, Down $${downPrice.toFixed(3)} > $${this.CHEAP_THRESHOLD})`);
+      const needSecond = (hasUp && !hasDown) || (hasDown && !hasUp);
+      const threshStr = needSecond ? `need 2nd side ≤$${this.SECOND_SIDE_THRESHOLD}` : `both > $${this.CHEAP_THRESHOLD}`;
+      console.log(`[PairTrade] ⚠ Neither side cheap enough (Up $${upPrice.toFixed(3)} vs $${upThreshold}, Down $${downPrice.toFixed(3)} vs $${downThreshold}) — ${threshStr}`);
       console.log(`[PairTrade] ══════════════════════════════════════`);
-      return { shouldTrade: false, reason: `No cheap side (Up $${upPrice.toFixed(2)}, Down $${downPrice.toFixed(2)} > $${this.CHEAP_THRESHOLD})` };
+      return { shouldTrade: false, reason: `No cheap side (Up $${upPrice.toFixed(2)}/${upThreshold}, Down $${downPrice.toFixed(2)}/${downThreshold})` };
     }
 
     // ─── SINGLE-SIDE CAP ──────────────────────────────────────
