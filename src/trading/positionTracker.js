@@ -517,6 +517,7 @@ export class PositionTracker {
         losses: this.losses,
         totalCost: this.totalCost,
         totalReturn: this.totalReturn,
+        recentOutcomes: this.recentOutcomes,
         savedAt: new Date().toISOString()
       };
       fs.writeFileSync(PNL_FILE, JSON.stringify(state, null, 2), "utf8");
@@ -536,7 +537,9 @@ export class PositionTracker {
         this.losses = data.losses || 0;
         this.totalCost = data.totalCost || 0;
         this.totalReturn = data.totalReturn || 0;
-        console.log(`[Tracker] Loaded state: ${this.wins}W/${this.losses}L | P&L: $${this.totalPnl.toFixed(2)}`);
+        this.recentOutcomes = data.recentOutcomes || [];
+        console.log(`[Tracker] Loaded state: ${this.wins}W/${this.losses}L | P&L: $${this.totalPnl.toFixed(2)} | Streak: ${this.recentOutcomes.slice(-5).join(' → ') || 'none'}`);
+        console.log(`[Tracker] ${this.closedPositions.length} historical trades loaded for strategy learning`);
       }
     } catch (e) {
       console.log("[Tracker] No previous state found, starting fresh");
