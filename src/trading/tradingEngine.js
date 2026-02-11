@@ -48,7 +48,7 @@ export class TradingEngine {
     this.HEDGE_DEADLINE_MIN = 2;     // Must hedge by 2 min left or hold
     
     // Wick / momentum filter
-    this.MIN_BTC_MOVE_PCT = 0.20;    // Require ≥0.20% BTC move (0.15 too weak, 0.30 too strict — 0 trades)
+    this.MIN_BTC_MOVE_PCT = 0.15;    // Require ≥0.15% BTC move (0.20 + both-cheap = 0 trades for 1hr+)
     
     // Tracking
     this.lastBuyTime = 0;
@@ -260,25 +260,22 @@ export class TradingEngine {
         return { shouldTrade: false, reason: `Low volatility (${(btcMovePct * 100).toFixed(2)}% < ${this.MIN_BTC_MOVE_PCT}%)` };
       }
 
-      // FIX 7 refinement: Only restrict single-side buys if ONE is cheap and OTHER is expensive
-      // If BOTH are cheap, allow INITIAL buys (they'll hedge quickly)
-      // If ONLY ONE is cheap, skip (wait for both to be cheap)
+      // Allow single-side INITIAL buys — FIX 7 prevents piling (max 1 unhedged buy)
+      // Both cheap = best case (can hedge immediately)
+      // One cheap = ok (buy it, wait for hedge — max $2 at risk)
       if (upCheap && downCheap) {
-        // Both cheap — buy the cheaper one (or either if equal)
         if (upPrice <= downPrice) {
           buyOutcome = "Up"; buyPrice = upPrice;
         } else {
           buyOutcome = "Down"; buyPrice = downPrice;
         }
         buyReason = "INITIAL (both cheap)";
-      } else if ((upCheap && !downCheap) || (downCheap && !upCheap)) {
-        // Only one side cheap — skip for now (wait for both)
-        const cheapSide = upCheap ? "Up" : "Down";
-        const expensiveSide = upCheap ? "Down" : "Up";
-        const expensivePrice = upCheap ? downPrice : upPrice;
-        console.log(`[DipArb2] ⏳ Only ${cheapSide} cheap, ${expensiveSide} too expensive ($${expensivePrice.toFixed(3)}) — wait for both`);
-        console.log(`[DipArb2] ══════════════════════════════════════`);
-        return { shouldTrade: false, reason: `Only ${cheapSide} cheap ($${(upCheap ? upPrice : downPrice).toFixed(2)}) — wait for both sides ≤$${this.CHEAP_THRESHOLD}` };
+      } else if (upCheap) {
+        buyOutcome = "Up"; buyPrice = upPrice;
+        buyReason = "INITIAL (Up cheap)";
+      } else if (downCheap) {
+        buyOutcome = "Down"; buyPrice = downPrice;
+        buyReason = "INITIAL (Down cheap)";
       }
     }
 
