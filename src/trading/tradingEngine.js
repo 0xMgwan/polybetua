@@ -265,50 +265,56 @@ export class TradingEngine {
     console.log(`[Hybrid] Conviction: ${conviction.score}/4 ${conviction.direction} [${conviction.votes.join(", ")}]`);
     console.log(`[Hybrid] Daily P&L: $${this.dailyPnl.toFixed(2)} | Losses: ${this.consecutiveLosses} | Conv: ${this.convictionTrades} | Arb: ${this.diparbTrades}`);
 
-    // ═══════════════════════════════════════════════════════════
+    // ═══════════════════════════════════════════════════════════════
     // PRIORITY 1: CONVICTION TRADE — 4/4 indicators agree
     // Directional bet, bigger size, no hedge needed
-    // ═══════════════════════════════════════════════════════════
+    // Only trade minutes 4-10 (mid-candle, after indicators settle)
+    // ═══════════════════════════════════════════════════════════════
     if (conviction.score >= this.CONVICTION_MIN_SCORE && conviction.direction !== "NEUTRAL") {
-      const isLong = conviction.direction === "LONG";
-      const targetOutcome = isLong ? "Up" : "Down";
-      const targetPrice = isLong ? upPrice : downPrice;
-
-      // Token must be cheap enough for good R:R
-      if (targetPrice <= this.CONVICTION_MAX_PRICE && targetPrice > 0.05) {
-        // Reduce size after consecutive losses (no revenge betting)
-        let dollars = this.CONVICTION_SIZE;
-        if (this.consecutiveLosses >= this.LOSS_STREAK_REDUCE) {
-          dollars = Math.max(2, Math.floor(dollars * 0.6));
-          console.log(`[Hybrid] ⚠ Loss streak ${this.consecutiveLosses} — reduced conviction to $${dollars}`);
-        }
-
-        const rr = ((1 - targetPrice) / targetPrice).toFixed(1);
-        console.log(`[Hybrid] 🎯 CONVICTION ${conviction.direction} | ${targetOutcome} @ $${targetPrice.toFixed(3)} | R:R ${rr}:1 | $${dollars}`);
-        console.log(`[Hybrid] ══════════════════════════════════════`);
-
-        return {
-          shouldTrade: true,
-          direction: conviction.direction,
-          targetOutcome,
-          confidence: conviction.score * 25,
-          edge: 1.0 - targetPrice,
-          marketPrice: targetPrice,
-          modelProb: conviction.score / 4,
-          strategy: "CONVICTION",
-          isConviction: true,
-          isLateHedge: false,
-          applyLongDiscount: false,
-          convictionDollars: dollars,
-          bullScore: conviction.bullVotes,
-          bearScore: conviction.bearVotes,
-          signals: conviction.votes,
-          reason: `🎯 CONVICTION ${targetOutcome} @ $${targetPrice.toFixed(3)} | ${conviction.votes.join("+")} | R:R ${rr}:1`
-        };
+      // Conviction timing gate: only minutes 4-10
+      if (candleMinute < 4 || candleMinute > 10) {
+        console.log(`[Hybrid] 🎯 Conviction ${conviction.direction} but min ${candleMinute} outside 4-10 window — skip`);
       } else {
-        console.log(`[Hybrid] 🎯 Conviction ${conviction.direction} but ${targetOutcome} $${targetPrice.toFixed(3)} > $${this.CONVICTION_MAX_PRICE} — too expensive, fall through to DipArb`);
+        const isLong = conviction.direction === "LONG";
+        const targetOutcome = isLong ? "Up" : "Down";
+        const targetPrice = isLong ? upPrice : downPrice;
+
+          // Token must be cheap enough for good R:R
+          if (targetPrice <= this.CONVICTION_MAX_PRICE && targetPrice > 0.05) {
+            // Reduce size after consecutive losses (no revenge betting)
+            let dollars = this.CONVICTION_SIZE;
+            if (this.consecutiveLosses >= this.LOSS_STREAK_REDUCE) {
+              dollars = Math.max(2, Math.floor(dollars * 0.6));
+              console.log(`[Hybrid] ⚠ Loss streak ${this.consecutiveLosses} — reduced conviction to $${dollars}`);
+            }
+
+            const rr = ((1 - targetPrice) / targetPrice).toFixed(1);
+            console.log(`[Hybrid] 🎯 CONVICTION ${conviction.direction} | ${targetOutcome} @ $${targetPrice.toFixed(3)} | R:R ${rr}:1 | $${dollars}`);
+            console.log(`[Hybrid] ══════════════════════════════════════`);
+
+            return {
+              shouldTrade: true,
+              direction: conviction.direction,
+              targetOutcome,
+              confidence: conviction.score * 25,
+              edge: 1.0 - targetPrice,
+              marketPrice: targetPrice,
+              modelProb: conviction.score / 4,
+              strategy: "CONVICTION",
+              isConviction: true,
+              isLateHedge: false,
+              applyLongDiscount: false,
+              convictionDollars: dollars,
+              bullScore: conviction.bullVotes,
+              bearScore: conviction.bearVotes,
+              signals: conviction.votes,
+              reason: `🎯 CONVICTION ${targetOutcome} @ $${targetPrice.toFixed(3)} | ${conviction.votes.join("+")} | R:R ${rr}:1`
+            };
+          } else {
+            console.log(`[Hybrid] 🎯 Conviction ${conviction.direction} but ${targetOutcome} $${targetPrice.toFixed(3)} > $${this.CONVICTION_MAX_PRICE} — too expensive, fall through to DipArb`);
+          }
+        }
       }
-    }
 
     // ═══════════════════════════════════════════════════════════
     // PRIORITY 2: DIPARB FALLBACK — mixed signals, hedge both sides
