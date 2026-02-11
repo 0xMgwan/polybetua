@@ -1,18 +1,21 @@
 import { PositionTracker } from "./positionTracker.js";
 
 // ═══════════════════════════════════════════════════════════════
-// DIP-ARB v3 — INSTITUTIONAL HEDGED PAIR TRADING
+// HYBRID v4 — CONVICTION + DIPARB FALLBACK
 //
-// Core: Buy BOTH sides cheap → pair cost < $1.00 → guaranteed profit.
-// 
-// v3 Fixes (from 1W/5L trade analysis — all losses were unhedged):
-// 1. TIME-BASED HEDGE: After min 5, allow hedge up to 55¢ (stop waiting)
-// 2. DYNAMIC THRESHOLD: Cheap threshold scales with time (35¢→40¢→45¢)
-// 3. DIRECTIONAL FILTER: Don't buy cheap side if momentum is AGAINST it
-// 4. SYMMETRIC BIAS: Block DOWN after Up wins (mirrors LONG block)
-// 5. OVERREACTION FILTER: INITIAL only on real overreaction (>0.25% move)
-// 6. PROFIT LOCK: Stop once min(up,down) × $1 > totalSpent
-// 7. NO PILING: Max 1 unhedged buy, then wait for hedge
+// Priority 1: CONVICTION — All 4 indicators agree → directional $5-8
+//   Requires: VWAP slope + MACD cross + RSI extreme + Heiken streak
+//   Token must be ≤45¢ (good R:R). Bigger bet, no hedge needed.
+//
+// Priority 2: DIPARB — Mixed signals → hedged pair $2-3 per leg
+//   Same as v3: buy both sides cheap, lock profit.
+//   Only when conviction criteria NOT met.
+//
+// Guardrails:
+//   - Daily drawdown stop: -$10 → halt trading for the day
+//   - No revenge betting: reduce size after 2 consecutive losses
+//   - Max 10% capital at risk across all open positions
+//   - Circuit breaker at $15 total exposure
 // ═══════════════════════════════════════════════════════════════
 
 export class TradingEngine {
@@ -28,39 +31,46 @@ export class TradingEngine {
     this.hourlyTrades = [];
     this.positionTracker = new PositionTracker();
     
-    // ─── DIP-ARB v2 PARAMETERS ──────────────────────────────
+    // ═══ CONVICTION MODE PARAMETERS ══════════════════════
+    this.CONVICTION_SIZE = 5;        // $5 per conviction trade (5-7% of ~$80 capital)
+    this.CONVICTION_MAX_PRICE = 0.45;// Max token price for conviction (good R:R)
+    this.CONVICTION_MIN_SCORE = 4;   // Need 4/4 indicators agreeing
+    this.CONVICTION_COOLDOWN = 60000;// 60s between conviction trades
+    
+    // ═══ DIPARB FALLBACK PARAMETERS ══════════════════════
     this.currentWindow = null;
     this.windowHistory = [];
-    
-    // Entry thresholds — scale with time pressure
     this.CHEAP_THRESHOLD = 0.35;     // Base max price (min 2-3)
-    this.CHEAP_THRESHOLD_MID = 0.40; // After min 4 (slightly relaxed)
-    this.CHEAP_THRESHOLD_LATE = 0.45;// After min 6 (need to hedge)
-    this.HEDGE_THRESHOLD = 0.55;     // Late hedge (min 5+, accept worse price to avoid full loss)
-    this.MAX_OPPOSITE_FOR_ENTRY = 0.55; // CRITICAL: Don't enter INITIAL if opposite side > 55¢ (can't hedge)
-    this.IDEAL_THRESHOLD = 0.25;     // Ideal entry (3:1+ R:R)
-    this.MAX_PAIR_ASK = 0.985;       // Only enter if Up+Down ≤ 98.5¢ (edge exists)
+    this.CHEAP_THRESHOLD_MID = 0.40; // After min 4
+    this.CHEAP_THRESHOLD_LATE = 0.45;// After min 6
+    this.HEDGE_THRESHOLD = 0.55;     // Late hedge (min 5+)
+    this.MAX_OPPOSITE_FOR_ENTRY = 0.55;
+    this.MAX_PAIR_ASK = 0.985;
+    this.DIPARB_SIZE = 2;            // $2 per DipArb leg (smaller — fallback)
+    this.LATE_HEDGE_SIZE = 2;
+    this.MAX_WINDOW_SPEND = 6;       // Max $6 per DipArb window
     
-    // Sizing
-    this.BUY_SIZE_DOLLARS = 3;       // $3 per buy
-    this.LATE_HEDGE_SIZE = 2;        // $2 for late hedges (smaller — worse price)
-    this.MAX_WINDOW_SPEND = 8;       // Max $8 per window
-    this.LONG_DISCOUNT = 0.7;        // Reduce LONG size to 70% after consecutive Down wins
-    
-    // Timing & cooldowns
-    this.MIN_BUY_COOLDOWN = 45000;   // 45s between buys
+    // ═══ SHARED PARAMETERS ══════════════════════════════
+    this.MIN_BUY_COOLDOWN = 30000;   // 30s between any buys
     this.MIN_CANDLE_MINUTE = 2;      // Don't trade first 2 min
-    this.SKIP_AFTER_MINUTE = 7;      // Don't start NEW positions after min 7
-    this.LATE_HEDGE_MINUTE = 5;      // After this minute, allow late hedge at worse price
+    this.SKIP_AFTER_MINUTE = 8;      // Extended — conviction can trade later
+    this.LATE_HEDGE_MINUTE = 5;
+    this.MIN_BTC_MOVE_PCT = 0.15;
     
-    // Directional / momentum filter
-    this.MIN_BTC_MOVE_PCT = 0.15;    // Require ≥0.15% BTC move for any entry
-    this.OVERREACTION_PCT = 0.25;    // Require ≥0.25% for INITIAL (real overreaction)
+    // ═══ GUARDRAILS ═════════════════════════════════════
+    this.DAILY_DRAWDOWN_LIMIT = -10;  // Stop trading if daily P&L < -$10
+    this.MAX_EXPOSURE = 15;           // Circuit breaker
+    this.LOSS_STREAK_REDUCE = 2;      // After 2 consecutive losses, reduce size
     
-    // Tracking
+    // ═══ TRACKING ══════════════════════════════════════
     this.lastBuyTime = 0;
-    this.consecutiveDownWins = 0;    // Track consecutive Down resolutions
-    this.consecutiveUpWins = 0;      // Track consecutive Up resolutions (for SHORT bias)
+    this.consecutiveDownWins = 0;
+    this.consecutiveUpWins = 0;
+    this.consecutiveLosses = 0;       // For revenge-bet prevention
+    this.dailyPnl = 0;               // Reset each day
+    this.dailyResetDate = new Date().toDateString();
+    this.convictionTrades = 0;        // Today's conviction trade count
+    this.diparbTrades = 0;            // Today's diparb trade count
   }
 
   _tradesInLastHour() {
@@ -86,7 +96,7 @@ export class TradingEngine {
       startPairCost: null,
       createdAt: Date.now()
     };
-    console.log(`[DipArb2] 🆕 New window: ${slug.slice(-20)}`);
+    console.log(`[Hybrid] 🆕 New window: ${slug.slice(-20)}`);
     return this.currentWindow;
   }
 
@@ -101,9 +111,9 @@ export class TradingEngine {
       const pairValue = minQty * 1.0;
       const estProfit = pairValue - totalSpent;
       const balanceRatio = minQty > 0 ? (Math.min(w.qtyUp, w.qtyDown) / Math.max(w.qtyUp, w.qtyDown) * 100).toFixed(0) : 0;
-      console.log(`[DipArb2] 📦 Archived | Spent: $${totalSpent.toFixed(2)} | Pairs: ${minQty} | PairCost: ${pairCost ? '$' + pairCost.toFixed(3) : 'N/A'} | Balance: ${balanceRatio}% | Est P&L: $${estProfit.toFixed(2)} | ${w.locked ? '🔒LOCKED' : '⚠OPEN'}`);
+      console.log(`[Hybrid] 📦 Archived | Spent: $${totalSpent.toFixed(2)} | Pairs: ${minQty} | PairCost: ${pairCost ? '$' + pairCost.toFixed(3) : 'N/A'} | Balance: ${balanceRatio}% | Est P&L: $${estProfit.toFixed(2)} | ${w.locked ? '🔒LOCKED' : '⚠OPEN'}`);
       if (pairCost && pairCost > 1.0) {
-        console.log(`[DipArb2] ⚠ WARNING: Final pair cost $${pairCost.toFixed(3)} > $1.00 — hedge failed!`);
+        console.log(`[Hybrid] ⚠ WARNING: Final pair cost $${pairCost.toFixed(3)} > $1.00 — hedge failed!`);
       }
       this.windowHistory.push({ ...w, archivedAt: Date.now(), totalSpent, minQty, estProfit, pairCost });
     }
@@ -115,9 +125,69 @@ export class TradingEngine {
     return (w.costUp / w.qtyUp) + (w.costDown / w.qtyDown);
   }
 
+  // ─── DAILY RESET ──────────────────────────────────────────────
+  _checkDailyReset() {
+    const today = new Date().toDateString();
+    if (today !== this.dailyResetDate) {
+      console.log(`[Hybrid] 📅 New day — resetting daily counters (prev P&L: $${this.dailyPnl.toFixed(2)})`);
+      this.dailyPnl = 0;
+      this.dailyResetDate = today;
+      this.convictionTrades = 0;
+      this.diparbTrades = 0;
+      this.consecutiveLosses = 0;
+    }
+  }
+
+  // ─── CONVICTION SCORING ───────────────────────────────────────
+  // Score 4 indicators: each votes BULL (+1) or BEAR (-1) or NEUTRAL (0)
+  // All 4 must agree for conviction trade
+  _scoreConviction(indicators) {
+    let bullVotes = 0;
+    let bearVotes = 0;
+    const votes = [];
+
+    // 1. VWAP SLOPE — trend direction
+    const vwapSlope = indicators.vwapSlope;
+    if (vwapSlope !== null && vwapSlope !== undefined) {
+      if (vwapSlope > 0.5) { bullVotes++; votes.push("VWAP:BULL"); }
+      else if (vwapSlope < -0.5) { bearVotes++; votes.push("VWAP:BEAR"); }
+      else { votes.push("VWAP:NEUTRAL"); }
+    }
+
+    // 2. MACD HISTOGRAM — momentum
+    const macdHist = indicators.macdHist;
+    const macdDelta = indicators.macdHistDelta;
+    if (macdHist !== null && macdHist !== undefined) {
+      if (macdHist > 0 && (macdDelta === null || macdDelta >= 0)) { bullVotes++; votes.push("MACD:BULL"); }
+      else if (macdHist < 0 && (macdDelta === null || macdDelta <= 0)) { bearVotes++; votes.push("MACD:BEAR"); }
+      else { votes.push("MACD:NEUTRAL"); }
+    }
+
+    // 3. RSI — overbought/oversold with direction
+    const rsi = indicators.rsi;
+    if (rsi !== null && rsi !== undefined) {
+      if (rsi > 55) { bullVotes++; votes.push(`RSI:BULL(${rsi.toFixed(0)})`); }
+      else if (rsi < 45) { bearVotes++; votes.push(`RSI:BEAR(${rsi.toFixed(0)})`); }
+      else { votes.push(`RSI:NEUTRAL(${rsi.toFixed(0)})`); }
+    }
+
+    // 4. HEIKEN ASHI — trend confirmation
+    const hColor = indicators.heikenColor;
+    const hCount = indicators.heikenCount || 0;
+    if (hColor === "green" && hCount >= 2) { bullVotes++; votes.push(`HA:BULL(${hCount})`); }
+    else if (hColor === "red" && hCount >= 2) { bearVotes++; votes.push(`HA:BEAR(${hCount})`); }
+    else { votes.push(`HA:NEUTRAL`); }
+
+    const direction = bullVotes > bearVotes ? "LONG" : bearVotes > bullVotes ? "SHORT" : "NEUTRAL";
+    const score = Math.max(bullVotes, bearVotes);
+    const unanimous = (bullVotes >= 4 || bearVotes >= 4);
+
+    return { direction, score, bullVotes, bearVotes, unanimous, votes };
+  }
+
   // ═══════════════════════════════════════════════════════════════
   // MAIN DECISION: shouldTrade()
-  // DipArb v2 — strict hedging, qty balance, wick filter
+  // HYBRID v4: Conviction first → DipArb fallback
   // ═══════════════════════════════════════════════════════════════
   shouldTrade(prediction, marketData, currentPrice, indicators = {}) {
     if (!this.config.enabled) {
@@ -126,6 +196,8 @@ export class TradingEngine {
     if (!prediction || !marketData) {
       return { shouldTrade: false, reason: "Missing prediction or market data" };
     }
+
+    this._checkDailyReset();
 
     const now = Date.now();
     const upPrice = marketData.upPrice;
@@ -138,10 +210,15 @@ export class TradingEngine {
 
     const combinedPrice = upPrice + downPrice;
 
-    // CIRCUIT BREAKER: Max $15 total open exposure
+    // ═══ GUARDRAILS ═══════════════════════════════════════════
     const totalExposure = this.positionTracker.openPositions.reduce((sum, pos) => sum + pos.cost, 0);
-    if (totalExposure >= 15) {
-      return { shouldTrade: false, reason: `Circuit breaker: exposure $${totalExposure.toFixed(2)} >= $15` };
+    if (totalExposure >= this.MAX_EXPOSURE) {
+      return { shouldTrade: false, reason: `Circuit breaker: exposure $${totalExposure.toFixed(2)} >= $${this.MAX_EXPOSURE}` };
+    }
+
+    // Daily drawdown stop
+    if (this.dailyPnl <= this.DAILY_DRAWDOWN_LIMIT) {
+      return { shouldTrade: false, reason: `Daily drawdown stop: $${this.dailyPnl.toFixed(2)} <= $${this.DAILY_DRAWDOWN_LIMIT}` };
     }
 
     // ─── TIMING ──────────────────────────────────────────────
@@ -162,49 +239,86 @@ export class TradingEngine {
       return { shouldTrade: false, reason: "Cooldown" };
     }
 
-    // ─── GET/CREATE WINDOW ────────────────────────────────────
+    // ─── SCORE CONVICTION ────────────────────────────────────
+    const conviction = this._scoreConviction(indicators);
+    const btcDelta3m = indicators.delta3m || 0;
+    const btcMovePct = Math.abs(btcDelta3m);
+
+    console.log(`[Hybrid] ══════════════════════════════════════`);
+    console.log(`[Hybrid] Up: $${upPrice.toFixed(3)} | Down: $${downPrice.toFixed(3)} | Min ${candleMinute}/15`);
+    console.log(`[Hybrid] Conviction: ${conviction.score}/4 ${conviction.direction} [${conviction.votes.join(", ")}]`);
+    console.log(`[Hybrid] Daily P&L: $${this.dailyPnl.toFixed(2)} | Losses: ${this.consecutiveLosses} | Conv: ${this.convictionTrades} | Arb: ${this.diparbTrades}`);
+
+    // ═══════════════════════════════════════════════════════════
+    // PRIORITY 1: CONVICTION TRADE — 4/4 indicators agree
+    // Directional bet, bigger size, no hedge needed
+    // ═══════════════════════════════════════════════════════════
+    if (conviction.score >= this.CONVICTION_MIN_SCORE && conviction.direction !== "NEUTRAL") {
+      const isLong = conviction.direction === "LONG";
+      const targetOutcome = isLong ? "Up" : "Down";
+      const targetPrice = isLong ? upPrice : downPrice;
+
+      // Token must be cheap enough for good R:R
+      if (targetPrice <= this.CONVICTION_MAX_PRICE && targetPrice > 0.05) {
+        // Reduce size after consecutive losses (no revenge betting)
+        let dollars = this.CONVICTION_SIZE;
+        if (this.consecutiveLosses >= this.LOSS_STREAK_REDUCE) {
+          dollars = Math.max(2, Math.floor(dollars * 0.6));
+          console.log(`[Hybrid] ⚠ Loss streak ${this.consecutiveLosses} — reduced conviction to $${dollars}`);
+        }
+
+        const rr = ((1 - targetPrice) / targetPrice).toFixed(1);
+        console.log(`[Hybrid] 🎯 CONVICTION ${conviction.direction} | ${targetOutcome} @ $${targetPrice.toFixed(3)} | R:R ${rr}:1 | $${dollars}`);
+        console.log(`[Hybrid] ══════════════════════════════════════`);
+
+        return {
+          shouldTrade: true,
+          direction: conviction.direction,
+          targetOutcome,
+          confidence: conviction.score * 25,
+          edge: 1.0 - targetPrice,
+          marketPrice: targetPrice,
+          modelProb: conviction.score / 4,
+          strategy: "CONVICTION",
+          isConviction: true,
+          isLateHedge: false,
+          applyLongDiscount: false,
+          convictionDollars: dollars,
+          bullScore: conviction.bullVotes,
+          bearScore: conviction.bearVotes,
+          signals: conviction.votes,
+          reason: `🎯 CONVICTION ${targetOutcome} @ $${targetPrice.toFixed(3)} | ${conviction.votes.join("+")} | R:R ${rr}:1`
+        };
+      } else {
+        console.log(`[Hybrid] 🎯 Conviction ${conviction.direction} but ${targetOutcome} $${targetPrice.toFixed(3)} > $${this.CONVICTION_MAX_PRICE} — too expensive, fall through to DipArb`);
+      }
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // PRIORITY 2: DIPARB FALLBACK — mixed signals, hedge both sides
+    // ═══════════════════════════════════════════════════════════
     const window = this._getOrCreateWindow(slug);
     const totalSpent = window.costUp + window.costDown;
 
-    // ─── FIX 3: PROFIT LOCK — stop once guaranteed profit ────
+    // Profit lock
     const minQty = Math.min(window.qtyUp, window.qtyDown);
     if (minQty > 0 && (minQty * 1.0) > totalSpent) {
       window.locked = true;
       const pairCost = this._calcPairCost(window);
       const profit = minQty * 1.0 - totalSpent;
-      console.log(`[DipArb2] 🔒 PROFIT LOCKED! ${minQty} pairs | Cost: $${pairCost?.toFixed(3)} | Guaranteed: +$${profit.toFixed(2)}`);
+      console.log(`[Hybrid] 🔒 PROFIT LOCKED! ${minQty} pairs | +$${profit.toFixed(2)}`);
       return { shouldTrade: false, reason: `Profit locked! ${minQty} pairs +$${profit.toFixed(2)}` };
     }
 
-    // Max window spend
     if (totalSpent >= this.MAX_WINDOW_SPEND) {
       return { shouldTrade: false, reason: `Window budget exhausted ($${totalSpent.toFixed(2)})` };
     }
 
-    // ─── MOMENTUM & DIRECTION ──────────────────────────────
-    const btcDelta3m = indicators.delta3m || 0;
-    const btcDelta1m = indicators.delta1m || 0;
-    const btcMovePct = Math.abs(btcDelta3m);
     const btcDirection = btcDelta3m > 0 ? "UP" : btcDelta3m < 0 ? "DOWN" : "FLAT";
-
-    // Dynamic cheap threshold based on candle minute
     const effectiveCheap = candleMinute >= 6 ? this.CHEAP_THRESHOLD_LATE
                          : candleMinute >= 4 ? this.CHEAP_THRESHOLD_MID
                          : this.CHEAP_THRESHOLD;
 
-    console.log(`[DipArb3] ══════════════════════════════════════`);
-    console.log(`[DipArb3] Up: $${upPrice.toFixed(3)} | Down: $${downPrice.toFixed(3)} | Sum: $${combinedPrice.toFixed(3)} | Min ${candleMinute}/15`);
-    console.log(`[DipArb3] Window: ${window.qtyUp} Up ($${window.costUp.toFixed(2)}) | ${window.qtyDown} Down ($${window.costDown.toFixed(2)}) | BTC Δ3m: ${(btcDelta3m * 100).toFixed(3)}% (${btcDirection})`);
-    console.log(`[DipArb3] Threshold: $${effectiveCheap.toFixed(2)} | Streaks: ${this.consecutiveDownWins}D/${this.consecutiveUpWins}U`);
-
-    // ─── PAIR ASK SUM CHECK ──────────────────────────────────
-    if (combinedPrice > this.MAX_PAIR_ASK && window.buys.length === 0) {
-      console.log(`[DipArb3] ⏳ No edge: sum $${combinedPrice.toFixed(3)} > $${this.MAX_PAIR_ASK}`);
-      console.log(`[DipArb3] ══════════════════════════════════════`);
-      return { shouldTrade: false, reason: `No edge (sum $${combinedPrice.toFixed(3)} > $${this.MAX_PAIR_ASK})` };
-    }
-
-    // ─── DECIDE WHAT TO BUY ─────────────────────────────────
     let buyOutcome = null;
     let buyPrice = null;
     let buyReason = "";
@@ -215,20 +329,19 @@ export class TradingEngine {
     const upCheap = upPrice <= effectiveCheap && upPrice > 0.05;
     const downCheap = downPrice <= effectiveCheap && downPrice > 0.05;
 
-    // ─── HEDGE LOGIC (have one side, need the other) ──────
+    // ─── HEDGE existing DipArb positions ──────────────────
     if (hasUp && !hasDown) {
       if (downCheap) {
         buyOutcome = "Down"; buyPrice = downPrice;
         buyReason = "HEDGE (need Down)";
       } else if (candleMinute >= this.LATE_HEDGE_MINUTE && downPrice <= this.HEDGE_THRESHOLD) {
-        // TIME-BASED LATE HEDGE: accept worse price to avoid full loss
         buyOutcome = "Down"; buyPrice = downPrice;
-        buyReason = `LATE_HEDGE (min ${candleMinute}, Down $${downPrice.toFixed(3)} ≤$${this.HEDGE_THRESHOLD})`;
+        buyReason = `LATE_HEDGE (min ${candleMinute})`;
         isLateHedge = true;
       } else {
-        console.log(`[DipArb3] ⏳ Have ${window.qtyUp} Up, waiting for Down ≤$${effectiveCheap.toFixed(2)} (currently $${downPrice.toFixed(3)})`);
-        console.log(`[DipArb3] ══════════════════════════════════════`);
-        return { shouldTrade: false, reason: `Waiting for Down hedge (Down $${downPrice.toFixed(2)} > $${effectiveCheap.toFixed(2)})` };
+        console.log(`[Hybrid] ⏳ DipArb: waiting for Down hedge (Down $${downPrice.toFixed(3)} > $${effectiveCheap.toFixed(2)})`);
+        console.log(`[Hybrid] ══════════════════════════════════════`);
+        return { shouldTrade: false, reason: `Waiting for Down hedge` };
       }
     } else if (hasDown && !hasUp) {
       if (upCheap) {
@@ -236,15 +349,15 @@ export class TradingEngine {
         buyReason = "HEDGE (need Up)";
       } else if (candleMinute >= this.LATE_HEDGE_MINUTE && upPrice <= this.HEDGE_THRESHOLD) {
         buyOutcome = "Up"; buyPrice = upPrice;
-        buyReason = `LATE_HEDGE (min ${candleMinute}, Up $${upPrice.toFixed(3)} ≤$${this.HEDGE_THRESHOLD})`;
+        buyReason = `LATE_HEDGE (min ${candleMinute})`;
         isLateHedge = true;
       } else {
-        console.log(`[DipArb3] ⏳ Have ${window.qtyDown} Down, waiting for Up ≤$${effectiveCheap.toFixed(2)} (currently $${upPrice.toFixed(3)})`);
-        console.log(`[DipArb3] ══════════════════════════════════════`);
-        return { shouldTrade: false, reason: `Waiting for Up hedge (Up $${upPrice.toFixed(2)} > $${effectiveCheap.toFixed(2)})` };
+        console.log(`[Hybrid] ⏳ DipArb: waiting for Up hedge (Up $${upPrice.toFixed(3)} > $${effectiveCheap.toFixed(2)})`);
+        console.log(`[Hybrid] ══════════════════════════════════════`);
+        return { shouldTrade: false, reason: `Waiting for Up hedge` };
       }
     } else if (hasUp && hasDown) {
-      // Both sides exist — rebalance or grow
+      // Rebalance
       if (window.qtyUp < window.qtyDown && upCheap) {
         buyOutcome = "Up"; buyPrice = upPrice;
         buyReason = "REBALANCE (Up qty low)";
@@ -252,94 +365,59 @@ export class TradingEngine {
         buyOutcome = "Down"; buyPrice = downPrice;
         buyReason = "REBALANCE (Down qty low)";
       }
-      if (!buyOutcome && upCheap && downCheap) {
-        if (window.qtyUp <= window.qtyDown) {
-          buyOutcome = "Up"; buyPrice = upPrice;
-        } else {
-          buyOutcome = "Down"; buyPrice = downPrice;
-        }
-        buyReason = "GROW (balanced, both cheap)";
-      }
     } else {
-      // ─── NO POSITION: INITIAL BUY ────────────────────────
+      // ─── NEW DIPARB POSITION ────────────────────────────
       if (candleMinute > this.SKIP_AFTER_MINUTE) {
-        console.log(`[DipArb3] ⏳ Min ${candleMinute} > ${this.SKIP_AFTER_MINUTE} — too late to start`);
-        console.log(`[DipArb3] ══════════════════════════════════════`);
-        return { shouldTrade: false, reason: `Too late for new position (min ${candleMinute})` };
+        console.log(`[Hybrid] ⏳ Too late for new DipArb (min ${candleMinute})`);
+        console.log(`[Hybrid] ══════════════════════════════════════`);
+        return { shouldTrade: false, reason: `Too late (min ${candleMinute})` };
       }
 
-      // ═══ HEDGEABILITY GATE (most important filter) ═══════════
-      // Data: ALL 3 unhedged losses had opposite side at 65-84¢.
-      // If opposite side > 55¢, we CANNOT hedge → guaranteed directional bet → coin flip.
-      // Institutional rule: NEVER enter a position you can't exit/hedge.
-      const oppositeUp = upPrice;   // price of Up (opposite if we buy Down)
-      const oppositeDown = downPrice; // price of Down (opposite if we buy Up)
-
-      if (upCheap && oppositeDown > this.MAX_OPPOSITE_FOR_ENTRY) {
-        console.log(`[DipArb3] ⛔ HEDGEABILITY: Up cheap ($${upPrice.toFixed(3)}) but Down $${downPrice.toFixed(3)} > $${this.MAX_OPPOSITE_FOR_ENTRY} — can't hedge`);
-        console.log(`[DipArb3] ══════════════════════════════════════`);
-        // Up is cheap but Down is too expensive to hedge → skip
-        if (!downCheap) {
-          return { shouldTrade: false, reason: `Can't hedge: Down $${downPrice.toFixed(2)} > $${this.MAX_OPPOSITE_FOR_ENTRY}` };
-        }
+      // Hedgeability gate: only enter if opposite side is hedgeable
+      if (upCheap && downPrice > this.MAX_OPPOSITE_FOR_ENTRY && !downCheap) {
+        console.log(`[Hybrid] ⛔ DipArb: Up cheap but Down $${downPrice.toFixed(3)} > $${this.MAX_OPPOSITE_FOR_ENTRY} — can't hedge`);
+        console.log(`[Hybrid] ══════════════════════════════════════`);
+        return { shouldTrade: false, reason: `Can't hedge: Down $${downPrice.toFixed(2)} too expensive` };
       }
-      if (downCheap && oppositeUp > this.MAX_OPPOSITE_FOR_ENTRY) {
-        console.log(`[DipArb3] ⛔ HEDGEABILITY: Down cheap ($${downPrice.toFixed(3)}) but Up $${upPrice.toFixed(3)} > $${this.MAX_OPPOSITE_FOR_ENTRY} — can't hedge`);
-        console.log(`[DipArb3] ══════════════════════════════════════`);
-        // Down is cheap but Up is too expensive to hedge → skip
-        if (!upCheap) {
-          return { shouldTrade: false, reason: `Can't hedge: Up $${upPrice.toFixed(2)} > $${this.MAX_OPPOSITE_FOR_ENTRY}` };
-        }
+      if (downCheap && upPrice > this.MAX_OPPOSITE_FOR_ENTRY && !upCheap) {
+        console.log(`[Hybrid] ⛔ DipArb: Down cheap but Up $${upPrice.toFixed(3)} > $${this.MAX_OPPOSITE_FOR_ENTRY} — can't hedge`);
+        console.log(`[Hybrid] ══════════════════════════════════════`);
+        return { shouldTrade: false, reason: `Can't hedge: Up $${upPrice.toFixed(2)} too expensive` };
       }
 
-      // OVERREACTION FILTER: Require real BTC move for INITIAL
-      if (btcMovePct < this.OVERREACTION_PCT) {
-        console.log(`[DipArb3] ⏳ Weak move: BTC Δ3m ${(btcMovePct * 100).toFixed(3)}% < ${(this.OVERREACTION_PCT * 100).toFixed(1)}% — need overreaction`);
-        console.log(`[DipArb3] ══════════════════════════════════════`);
-        return { shouldTrade: false, reason: `Weak move (${(btcMovePct * 100).toFixed(2)}% < ${(this.OVERREACTION_PCT * 100).toFixed(1)}%)` };
+      // Require BTC movement
+      if (btcMovePct < this.MIN_BTC_MOVE_PCT) {
+        console.log(`[Hybrid] ⏳ Low vol for DipArb: ${(btcMovePct * 100).toFixed(2)}% < ${(this.MIN_BTC_MOVE_PCT * 100).toFixed(1)}%`);
+        console.log(`[Hybrid] ══════════════════════════════════════`);
+        return { shouldTrade: false, reason: `Low vol (${(btcMovePct * 100).toFixed(2)}%)` };
       }
 
-      // DIRECTIONAL FILTER: Only buy cheap side if BTC momentum SUPPORTS it
-      // Key insight: cheap side = market thinks it'll lose. Only buy if momentum says market is WRONG.
+      // Pick side based on momentum
       if (upCheap && downCheap) {
-        // Both cheap (rare & ideal) — buy the one momentum supports
-        if (btcDirection === "UP") {
-          buyOutcome = "Up"; buyPrice = upPrice;
-        } else {
-          buyOutcome = "Down"; buyPrice = downPrice;
-        }
-        buyReason = "INITIAL (both cheap, momentum pick)";
-      } else if (upCheap && oppositeDown <= this.MAX_OPPOSITE_FOR_ENTRY) {
-        // Up cheap AND Down is hedgeable
-        if (btcDirection === "UP") {
-          buyOutcome = "Up"; buyPrice = upPrice;
-          buyReason = "INITIAL (Up cheap + BTC rising + hedgeable)";
-        } else {
-          console.log(`[DipArb3] ⛔ Up cheap ($${upPrice.toFixed(3)}) but BTC going ${btcDirection} — don't buy against momentum`);
-          console.log(`[DipArb3] ══════════════════════════════════════`);
-          return { shouldTrade: false, reason: `Up cheap but BTC ${btcDirection} — skip` };
-        }
-      } else if (downCheap && oppositeUp <= this.MAX_OPPOSITE_FOR_ENTRY) {
-        // Down cheap AND Up is hedgeable
-        if (btcDirection === "DOWN") {
-          buyOutcome = "Down"; buyPrice = downPrice;
-          buyReason = "INITIAL (Down cheap + BTC falling + hedgeable)";
-        } else {
-          console.log(`[DipArb3] ⛔ Down cheap ($${downPrice.toFixed(3)}) but BTC going ${btcDirection} — don't buy against momentum`);
-          console.log(`[DipArb3] ══════════════════════════════════════`);
-          return { shouldTrade: false, reason: `Down cheap but BTC ${btcDirection} — skip` };
-        }
+        if (btcDirection === "UP") { buyOutcome = "Up"; buyPrice = upPrice; }
+        else { buyOutcome = "Down"; buyPrice = downPrice; }
+        buyReason = "DIPARB_INIT (both cheap)";
+      } else if (upCheap && btcDirection === "UP") {
+        buyOutcome = "Up"; buyPrice = upPrice;
+        buyReason = "DIPARB_INIT (Up cheap + rising)";
+      } else if (downCheap && btcDirection === "DOWN") {
+        buyOutcome = "Down"; buyPrice = downPrice;
+        buyReason = "DIPARB_INIT (Down cheap + falling)";
+      } else {
+        console.log(`[Hybrid] ⏳ DipArb: no aligned cheap side`);
+        console.log(`[Hybrid] ══════════════════════════════════════`);
+        return { shouldTrade: false, reason: `No aligned cheap side for DipArb` };
       }
     }
 
     if (!buyOutcome) {
-      console.log(`[DipArb3] ⏳ No cheap side: Up $${upPrice.toFixed(3)} / Down $${downPrice.toFixed(3)} > $${effectiveCheap.toFixed(2)}`);
-      console.log(`[DipArb3] ══════════════════════════════════════`);
-      return { shouldTrade: false, reason: `No cheap side (Up $${upPrice.toFixed(2)}, Down $${downPrice.toFixed(2)})` };
+      console.log(`[Hybrid] ⏳ No trade opportunity`);
+      console.log(`[Hybrid] ══════════════════════════════════════`);
+      return { shouldTrade: false, reason: `No trade opportunity` };
     }
 
-    // ─── SIMULATE PAIR COST BEFORE BUYING ────────────────────
-    const tradeDollars = isLateHedge ? this.LATE_HEDGE_SIZE : this.BUY_SIZE_DOLLARS;
+    // Simulate pair cost for DipArb
+    const tradeDollars = isLateHedge ? this.LATE_HEDGE_SIZE : this.DIPARB_SIZE;
     if (window.buys.length > 0) {
       const simSize = Math.floor(tradeDollars / buyPrice);
       const simCost = buyPrice * simSize;
@@ -350,69 +428,45 @@ export class TradingEngine {
       
       if (simUp > 0 && simDown > 0) {
         const simPairCost = (simCostUp / simUp) + (simCostDown / simDown);
+        if (simPairCost >= 1.0) {
+          console.log(`[Hybrid] ⚠ Pair cost $${simPairCost.toFixed(3)} >= $1.00 — SKIP`);
+          console.log(`[Hybrid] ══════════════════════════════════════`);
+          return { shouldTrade: false, reason: `Pair cost would be $${simPairCost.toFixed(3)}` };
+        }
         const currentPairCost = this._calcPairCost(window);
-        
-        // For late hedges, allow pair cost up to $1.00 (break-even is better than full loss)
-        const maxAllowedPairCost = isLateHedge ? 1.0 : 1.0;
-        if (simPairCost >= maxAllowedPairCost) {
-          console.log(`[DipArb3] ⚠ Simulated pair cost $${simPairCost.toFixed(3)} >= $${maxAllowedPairCost} — SKIP`);
-          console.log(`[DipArb3] ══════════════════════════════════════`);
-          return { shouldTrade: false, reason: `Pair cost would be $${simPairCost.toFixed(3)} >= $${maxAllowedPairCost}` };
-        }
-        
-        // For late hedges, don't check if it raises pair cost (it will — that's ok, better than full loss)
         if (!isLateHedge && currentPairCost && simPairCost > currentPairCost) {
-          console.log(`[DipArb3] ⚠ Would raise pair cost $${currentPairCost.toFixed(3)} → $${simPairCost.toFixed(3)} — SKIP`);
-          console.log(`[DipArb3] ══════════════════════════════════════`);
-          return { shouldTrade: false, reason: `Would raise pair cost to $${simPairCost.toFixed(3)}` };
+          console.log(`[Hybrid] ⚠ Would raise pair cost — SKIP`);
+          console.log(`[Hybrid] ══════════════════════════════════════`);
+          return { shouldTrade: false, reason: `Would raise pair cost` };
         }
-        
-        console.log(`[DipArb3] ✓ Sim pair cost: $${simPairCost.toFixed(3)} (${currentPairCost ? 'from $' + currentPairCost.toFixed(3) : 'new'})${isLateHedge ? ' [LATE HEDGE]' : ''}`);
       }
     }
 
-    // Record starting pair cost for diagnostics
     if (window.buys.length === 0) {
       window.startPairCost = combinedPrice;
     }
 
     const rr = ((1 - buyPrice) / buyPrice).toFixed(1);
-    const pairCostStr = this._calcPairCost(window)?.toFixed(3) || "N/A";
-    console.log(`[DipArb3] ✅ BUY ${buyOutcome} @ $${buyPrice.toFixed(3)} | ${buyReason} | R:R ${rr}:1 | PairCost: $${pairCostStr}`);
-    console.log(`[DipArb3] ══════════════════════════════════════`);
-
-    // ─── SYMMETRIC BIAS BLOCKS ─────────────────────────────
-    const isLong = buyOutcome === "Up";
-    const isShort = buyOutcome === "Down";
-    
-    // Block LONG after 2+ consecutive Down wins (unless super cheap or hedge)
-    if (isLong && !buyReason.includes("HEDGE") && this.consecutiveDownWins >= 2 && buyPrice > 0.28) {
-      console.log(`[DipArb3] ⛔ LONG blocked: ${this.consecutiveDownWins} Down wins & Up $${buyPrice.toFixed(3)} > $0.28`);
-      console.log(`[DipArb3] ══════════════════════════════════════`);
-      return { shouldTrade: false, reason: `LONG blocked after ${this.consecutiveDownWins} Down wins` };
-    }
-    // Block SHORT after 2+ consecutive Up wins (unless super cheap or hedge)
-    if (isShort && !buyReason.includes("HEDGE") && this.consecutiveUpWins >= 2 && buyPrice > 0.28) {
-      console.log(`[DipArb3] ⛔ SHORT blocked: ${this.consecutiveUpWins} Up wins & Down $${buyPrice.toFixed(3)} > $0.28`);
-      console.log(`[DipArb3] ══════════════════════════════════════`);
-      return { shouldTrade: false, reason: `SHORT blocked after ${this.consecutiveUpWins} Up wins` };
-    }
-    const applyLongDiscount = isLong && this.consecutiveDownWins >= 1;
+    console.log(`[Hybrid] 🔄 DIPARB ${buyOutcome} @ $${buyPrice.toFixed(3)} | ${buyReason} | R:R ${rr}:1`);
+    console.log(`[Hybrid] ══════════════════════════════════════`);
 
     return {
       shouldTrade: true,
-      direction: isLong ? "LONG" : "SHORT",
+      direction: buyOutcome === "Up" ? "LONG" : "SHORT",
       targetOutcome: buyOutcome,
-      confidence: 85,
+      confidence: 70,
       edge: 1.0 - combinedPrice,
       marketPrice: buyPrice,
-      modelProb: 0.85,
+      modelProb: 0.7,
       strategy: `DIPARB_${buyReason.split(' ')[0]}`,
-      applyLongDiscount,
+      isConviction: false,
       isLateHedge,
-      bullScore: 0, bearScore: 0,
+      applyLongDiscount: false,
+      convictionDollars: null,
+      bullScore: conviction.bullVotes,
+      bearScore: conviction.bearVotes,
       signals: [`diparb:${buyOutcome}@$${buyPrice.toFixed(3)}`, buyReason],
-      reason: `${buyOutcome} @ $${buyPrice.toFixed(3)} | ${buyReason} | R:R ${rr}:1`
+      reason: `🔄 DIPARB ${buyOutcome} @ $${buyPrice.toFixed(3)} | ${buyReason} | R:R ${rr}:1`
     };
   }
 
@@ -436,11 +490,13 @@ export class TradingEngine {
       const price = Math.min(0.95, signal.marketPrice + 0.003);
       const MIN_SHARES = 5;
       
-      // Apply sizing: late hedge gets smaller size, LONG discount if streak
-      let dollars = signal.isLateHedge ? this.LATE_HEDGE_SIZE : this.BUY_SIZE_DOLLARS;
-      if (signal.applyLongDiscount) {
-        dollars = Math.max(1, Math.floor(dollars * this.LONG_DISCOUNT));
-        console.log(`[DipArb2] ⚠ LONG discount: $${dollars} (${this.consecutiveDownWins} consecutive Down wins)`);
+      // Sizing: CONVICTION gets bigger bet, DIPARB gets smaller
+      let dollars;
+      if (signal.isConviction) {
+        dollars = signal.convictionDollars || this.CONVICTION_SIZE;
+        console.log(`[Hybrid] 🎯 CONVICTION sizing: $${dollars}`);
+      } else {
+        dollars = signal.isLateHedge ? this.LATE_HEDGE_SIZE : this.DIPARB_SIZE;
       }
       
       let size = Math.floor(dollars / price);
@@ -457,11 +513,11 @@ export class TradingEngine {
       });
 
       if (!order || !order.orderID) {
-        console.log("[DipArb2] Order failed - no orderID returned");
+        console.log("[Hybrid] Order failed - no orderID returned");
         return { success: false, reason: "Order failed - no orderID returned" };
       }
       
-      console.log(`[DipArb3] ✅ Order: ${signal.strategy} ${signal.targetOutcome} ${size}x @ $${price.toFixed(3)} = $${maxCost.toFixed(2)}`);
+      console.log(`[Hybrid] ✅ Order: ${signal.strategy} ${signal.targetOutcome} ${size}x @ $${price.toFixed(3)} = $${maxCost.toFixed(2)}`);
 
       // Update window state
       const window = this.currentWindow;
@@ -484,12 +540,12 @@ export class TradingEngine {
         const pairCost = this._calcPairCost(window);
         const totalSpent = window.costUp + window.costDown;
         const pairs = Math.min(window.qtyUp, window.qtyDown);
-        console.log(`[DipArb2] Window: ${window.qtyUp} Up ($${window.costUp.toFixed(2)}) | ${window.qtyDown} Down ($${window.costDown.toFixed(2)}) | Pairs: ${pairs} | PairCost: ${pairCost ? '$' + pairCost.toFixed(3) : 'N/A'} | Spent: $${totalSpent.toFixed(2)}`);
+        console.log(`[Hybrid] Window: ${window.qtyUp} Up ($${window.costUp.toFixed(2)}) | ${window.qtyDown} Down ($${window.costDown.toFixed(2)}) | Pairs: ${pairs} | PairCost: ${pairCost ? '$' + pairCost.toFixed(3) : 'N/A'} | Spent: $${totalSpent.toFixed(2)}`);
         
         // Check if profit is now locked
         if (pairs > 0 && pairs * 1.0 > totalSpent) {
           window.locked = true;
-          console.log(`[DipArb2] 🔒 PROFIT LOCKED after this buy! +$${(pairs - totalSpent).toFixed(2)} guaranteed`);
+          console.log(`[Hybrid] 🔒 PROFIT LOCKED after this buy! +$${(pairs - totalSpent).toFixed(2)} guaranteed`);
         }
       }
 
@@ -510,6 +566,13 @@ export class TradingEngine {
 
       this.tradeHistory.push(trade);
 
+      // Track trade type
+      if (signal.isConviction) {
+        this.convictionTrades++;
+      } else {
+        this.diparbTrades++;
+      }
+
       // Track position for P&L
       this.positionTracker.addPosition({
         orderId: order.orderID,
@@ -524,9 +587,9 @@ export class TradingEngine {
         upPrice: marketData.upPrice,
         downPrice: marketData.downPrice,
         indicators: {},
-        bullScore: 0, bearScore: 0,
+        bullScore: signal.bullScore || 0, bearScore: signal.bearScore || 0,
         signals: signal.signals || [],
-        strategy: signal.strategy || "DIPARB2"
+        strategy: signal.strategy || "HYBRID"
       });
 
       return {
@@ -539,8 +602,19 @@ export class TradingEngine {
     }
   }
 
-  // Called when a position resolves — track streaks for bias blocks
-  recordResolution(outcome, won) {
+  // Called when a position resolves — track streaks, daily P&L, loss streaks
+  recordResolution(outcome, won, pnl = 0) {
+    // Track daily P&L for drawdown stop
+    this.dailyPnl += pnl;
+    
+    // Track consecutive losses for revenge-bet prevention
+    if (won) {
+      this.consecutiveLosses = 0;
+    } else {
+      this.consecutiveLosses++;
+    }
+    
+    // Track directional streaks
     if (outcome === "Down" && won) {
       this.consecutiveDownWins++;
       this.consecutiveUpWins = 0;
@@ -548,6 +622,8 @@ export class TradingEngine {
       this.consecutiveUpWins++;
       this.consecutiveDownWins = 0;
     }
+    
+    console.log(`[Hybrid] 📊 Resolution: ${outcome} ${won ? 'WIN' : 'LOSS'} $${pnl.toFixed(2)} | Daily: $${this.dailyPnl.toFixed(2)} | Streak: ${this.consecutiveLosses}L`);
   }
 
   // Check and resolve positions when market ends
@@ -589,7 +665,11 @@ export class TradingEngine {
         startPairCost: w.startPairCost
       } : null,
       windowsCompleted: this.windowHistory.length,
-      consecutiveDownWins: this.consecutiveDownWins
+      consecutiveDownWins: this.consecutiveDownWins,
+      convictionTrades: this.convictionTrades,
+      diparbTrades: this.diparbTrades,
+      dailyPnl: this.dailyPnl,
+      consecutiveLosses: this.consecutiveLosses
     };
   }
 

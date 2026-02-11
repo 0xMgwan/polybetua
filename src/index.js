@@ -820,8 +820,8 @@ async function main() {
       if (tradingStatus?.enabled) {
         const stats = getTradingStats();
         const statusColor = tradingStatus.dryRun ? ANSI.yellow : ANSI.green;
-        const statusText = tradingStatus.dryRun ? "DRY RUN" : "DIP-ARB v2";
-        tradingLines.push(kv("TRADING:", `${statusColor}DIP-ARB v3${ANSI.reset} ${ANSI.dim}(momentum + hedge, $8/window)${ANSI.reset}`));
+        const statusText = tradingStatus.dryRun ? "DRY RUN" : "HYBRID v4";
+        tradingLines.push(kv("TRADING:", `${statusColor}HYBRID v4${ANSI.reset} ${ANSI.dim}(conviction $5 + DipArb $2 fallback)${ANSI.reset}`));
         
         if (stats) {
           // P&L Display
