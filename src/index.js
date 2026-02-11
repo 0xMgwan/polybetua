@@ -821,7 +821,7 @@ async function main() {
         const stats = getTradingStats();
         const statusColor = tradingStatus.dryRun ? ANSI.yellow : ANSI.green;
         const statusText = tradingStatus.dryRun ? "DRY RUN" : "DIP-ARB v2";
-        tradingLines.push(kv("TRADING:", `${statusColor}${statusText}${ANSI.reset} ${ANSI.dim}(both sides cheap, $8/window)${ANSI.reset}`));
+        tradingLines.push(kv("TRADING:", `${statusColor}DIP-ARB v3${ANSI.reset} ${ANSI.dim}(momentum + hedge, $8/window)${ANSI.reset}`));
         
         if (stats) {
           // P&L Display
