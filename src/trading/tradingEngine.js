@@ -48,7 +48,7 @@ export class TradingEngine {
     this.HEDGE_DEADLINE_MIN = 2;     // Must hedge by 2 min left or hold
     
     // Wick / momentum filter
-    this.MIN_BTC_MOVE_PCT = 0.15;    // Require ≥0.15% BTC move to trigger entry
+    this.MIN_BTC_MOVE_PCT = 0.30;    // Require ≥0.30% BTC move to trigger entry (was 0.15 — too weak)
     
     // Tracking
     this.lastBuyTime = 0;
@@ -328,9 +328,14 @@ export class TradingEngine {
     console.log(`[DipArb2] ✅ BUY ${buyOutcome} @ $${buyPrice.toFixed(3)} | ${buyReason} | R:R ${rr}:1 | PairCost: $${pairCostStr}`);
     console.log(`[DipArb2] ══════════════════════════════════════`);
 
-    // ─── FIX 4: LONG BIAS — reduce LONG size after consecutive Down wins
+    // ─── FIX 4: LONG BIAS — BLOCK LONG after consecutive Down wins unless super cheap
     const isLong = buyOutcome === "Up";
-    const applyLongDiscount = isLong && this.consecutiveDownWins >= 2;
+    if (isLong && this.consecutiveDownWins >= 2 && buyPrice > 0.28) {
+      console.log(`[DipArb2] ⛔ LONG blocked: ${this.consecutiveDownWins} consecutive Down wins & Up $${buyPrice.toFixed(3)} > $0.28`);
+      console.log(`[DipArb2] ══════════════════════════════════════`);
+      return { shouldTrade: false, reason: `LONG blocked after ${this.consecutiveDownWins} Down wins (Up $${buyPrice.toFixed(2)} > $0.28)` };
+    }
+    const applyLongDiscount = isLong && this.consecutiveDownWins >= 1;
 
     return {
       shouldTrade: true,
