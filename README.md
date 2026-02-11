@@ -1,39 +1,45 @@
-# Polymarket BTC 15m Auto-Trading Bot
+# Polymarket BTC 15m Auto-Trading Bot — DipArb v2
 
-A real-time auto-trading bot for Polymarket **"Bitcoin Up or Down" 15-minute** markets with built-in survival mode capital preservation.
+A real-time auto-trading bot for Polymarket **"Bitcoin Up or Down" 15-minute** markets using **hedged pair trading (DipArb)** to lock in guaranteed profits.
 
 ## Features
 
-- **Auto-Trading** - Automatically places trades on Polymarket BTC 15m markets
-- **Survival Mode** - Strict capital preservation with $3 max per trade, circuit breakers, and loss limits
-- **Technical Analysis** - VWAP, RSI, MACD, Heiken Ashi indicators with consensus-based signals
+- **Hedged Pair Trading** - Buys both sides cheap to lock in guaranteed profit when pair cost < $1.00
+- **Strict Hedging** - Both sides must be ≤35¢ to enter; simulates pair cost before every buy
+- **Quantity Balancing** - Forces balanced positions (equal qty on both sides) for guaranteed payoff
+- **Profit Locking** - Stops buying once profit is mathematically guaranteed
+- **LONG Bias Reduction** - Blocks LONG buys after consecutive Down wins (unless super cheap ≤28¢)
+- **Momentum Filter** - Requires ≥0.15% BTC move to filter flat/low-vol windows
 - **Position Tracking** - Tracks open positions, P&L, win rate, and streaks
-- **Live Dashboard** - Real-time terminal display with market data, indicators, and trading status
+- **Live Dashboard** - Real-time terminal display with window state, pair cost, and guaranteed profit
 - **Railway Ready** - Deploy to Railway for 24/7 operation
 
-## How It Works
+## How It Works (DipArb v2)
 
 1. Bot monitors Polymarket BTC 15-minute Up/Down markets
-2. Analyzes price action using 5 technical indicators (VWAP, VWAP slope, RSI, MACD, Heiken Ashi)
-3. When 3/5 indicators agree and confidence/edge thresholds are met, places a BUY order
-4. Waits for market resolution (15 min) - if BTC goes Up/Down as predicted, you win
-5. Tracks all trades and P&L, with circuit breakers to stop trading on losses
+2. Waits for one side to become cheap (≤35¢) with BTC momentum (≥0.15% move)
+3. **Leg 1**: Buys the cheap side ($3)
+4. **Leg 2**: Waits for the other side to become cheap (≤35¢), then buys it ($3)
+5. **Profit Lock**: Once min(qtyUp, qtyDown) × $1.00 > totalSpent, stops buying
+6. **Resolution**: Market resolves, bot collects guaranteed profit
+7. If Leg 2 never fills: unhedged bet (max $3 loss, capped by FIX 7)
 
-## Survival Mode Rules
+## DipArb v2 Rules (7 Fixes)
 
-| Rule | Value |
-|------|-------|
-| Max per trade | $3-$5 (depends on min 5 shares) |
-| Min confidence | 60% (relaxed for Chainlink fallback) |
-| Min edge | 10% (relaxed for Chainlink fallback) |
-| Indicator consensus | 2/5 must agree (relaxed) |
-| Trades per market | 1 (no doubling down) |
-| Trades per hour | 4 max (one per 15min candle) |
-| Cooldown | 15 minutes |
-| Time window | Minutes 1+ of candle |
-| Token price cap | Under $0.85 |
-| Min order size | 5 shares (Polymarket minimum) |
-| Circuit breaker | Removed - continuous trading mode |
+| Fix | Rule | Value |
+|-----|------|-------|
+| **1** | Strict Hedging | Both sides ≤$0.35 to buy; simulate pair cost before each buy |
+| **2** | Qty Balance | Always buy the side with LOWER qty first |
+| **3** | Profit Lock | Stop buying once min(qty) × $1.00 > totalSpent |
+| **4** | LONG Bias | Block LONG after 2+ Down wins (unless ≤$0.28) |
+| **5** | Wick Filter | Require ≥0.15% BTC move for initial entry |
+| **6** | Reduced Frequency | Don't start new positions after minute 7; 45s cooldown |
+| **7** | No Piling | Max 1 unhedged buy ($3 risk); then WAIT for hedge or skip |
+
+**Sizing:**
+- Per buy: $3
+- Per window: $8 max
+- Circuit breaker: $15 total open exposure
 
 ---
 
@@ -72,13 +78,14 @@ TRADING_ENABLED=true
 TRADING_DRY_RUN=false
 PRIVATE_KEY=your_wallet_private_key_here
 
-# Survival Mode Parameters (defaults shown)
-TRADING_MIN_CONFIDENCE=65
-TRADING_ORDER_SIZE=3
-TRADING_MIN_EDGE=0.18
-TRADING_MAX_TRADES_PER_HOUR=2
-TRADING_MAX_DAILY_LOSS=8
-TRADING_MAX_TOKEN_PRICE=0.85
+# DipArb v2 Parameters (defaults shown)
+# These are now hardcoded in tradingEngine.js but shown here for reference:
+# CHEAP_THRESHOLD=0.35          # Max price to buy any side
+# BUY_SIZE_DOLLARS=3            # $3 per buy
+# MAX_WINDOW_SPEND=8            # $8 max per window
+# MIN_BTC_MOVE_PCT=0.15         # Require 0.15% BTC move for entry
+# SKIP_AFTER_MINUTE=7           # Don't start new positions after min 7
+# MIN_BUY_COOLDOWN=45000        # 45s between buys
 ```
 
 > **IMPORTANT:** Never commit your `.env` file. It is already in `.gitignore`.
@@ -124,16 +131,19 @@ In Railway dashboard > **Variables**, add:
 | `TRADING_ENABLED` | `true` | Enable auto-trading |
 | `TRADING_DRY_RUN` | `false` | Actually place orders |
 
-**Survival Mode Parameters:**
+**DipArb v2 Parameters:**
 
-| Variable | Value | Notes |
-|----------|-------|-------|
-| `TRADING_MIN_CONFIDENCE` | `60` | Relaxed for Chainlink fallback |
-| `TRADING_ORDER_SIZE` | `3` | Max $3 per trade (min 5 shares) |
-| `TRADING_MIN_EDGE` | `0.10` | 10% edge minimum |
-| `TRADING_MAX_TRADES_PER_HOUR` | `4` | One per 15-min candle |
-| `TRADING_MAX_DAILY_LOSS` | `8` | Stop after $8 loss |
-| `TRADING_MAX_TOKEN_PRICE` | `0.85` | Only buy under $0.85 |
+DipArb v2 parameters are hardcoded in `src/trading/tradingEngine.js`. Key values:
+
+| Parameter | Value | Notes |
+|-----------|-------|-------|
+| `CHEAP_THRESHOLD` | `0.35` | Max price to buy any side |
+| `BUY_SIZE_DOLLARS` | `3` | $3 per buy |
+| `MAX_WINDOW_SPEND` | `8` | $8 max per window |
+| `MIN_BTC_MOVE_PCT` | `0.15` | Require 0.15% BTC move for entry |
+| `SKIP_AFTER_MINUTE` | `7` | Don't start new positions after min 7 |
+| `MIN_BUY_COOLDOWN` | `45000` | 45 seconds between buys |
+| `LONG_DISCOUNT` | `0.7` | Reduce LONG size to 70% after 1+ Down win |
 
 **Polymarket & Polygon:**
 
@@ -182,22 +192,27 @@ Railway will automatically build and start the bot. It will:
 | `POLYGON_RPC_URLS` | _(optional)_ | Comma-separated fallback RPCs |
 | `POLYGON_WSS_URLS` | _(optional)_ | WebSocket RPCs for real-time data |
 
-### Trading
+### DipArb v2 Trading (Hardcoded in tradingEngine.js)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `CHEAP_THRESHOLD` | `0.35` | Max price to buy any side |
+| `IDEAL_THRESHOLD` | `0.25` | Ideal entry (3:1+ R:R) |
+| `MAX_PAIR_ASK` | `0.985` | Only enter if Up+Down ≤ 98.5¢ |
+| `BUY_SIZE_DOLLARS` | `3` | $3 per buy |
+| `MAX_WINDOW_SPEND` | `8` | $8 max per window |
+| `MIN_BTC_MOVE_PCT` | `0.15` | Require ≥0.15% BTC move for entry |
+| `SKIP_AFTER_MINUTE` | `7` | Don't start new positions after min 7 |
+| `MIN_BUY_COOLDOWN` | `45000` | 45 seconds between buys |
+| `LONG_DISCOUNT` | `0.7` | Reduce LONG size to 70% after 1+ Down win |
+
+### Environment Variables
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `TRADING_ENABLED` | `false` | Enable auto-trading |
 | `TRADING_DRY_RUN` | `false` | Simulate trades without placing orders |
 | `PRIVATE_KEY` | _(required)_ | Wallet private key |
-| `TRADING_MIN_CONFIDENCE` | `65` | Min prediction confidence (%) |
-| `TRADING_ORDER_SIZE` | `3` | Max dollars per trade |
-| `TRADING_MIN_EDGE` | `0.18` | Min edge over market price |
-| `TRADING_COOLDOWN_MS` | `900000` | Cooldown between trades (ms) |
-| `TRADING_MAX_CAPITAL_RISK` | `0.06` | Max % of capital per trade |
-| `TRADING_MIN_BALANCE` | `35` | Reserve balance (don't trade below) |
-| `TRADING_MAX_DAILY_LOSS` | `8` | Stop after this daily loss ($) |
-| `TRADING_MAX_TRADES_PER_HOUR` | `2` | Max trades per hour |
-| `TRADING_MAX_TOKEN_PRICE` | `0.85` | Only buy tokens under this price |
 
 ### Proxy Support
 
@@ -231,8 +246,11 @@ src/
 ### Local Development
 
 - **Bot not trading?** Check that `TRADING_ENABLED=true` and `TRADING_DRY_RUN=false` in your `.env`
-- **"Too early/late in candle"?** Normal - bot only trades during minutes 1+ of each 15-min candle
-- **"Price too high"?** The token price exceeds `TRADING_MAX_TOKEN_PRICE` - wait for a better entry
+- **"No cheap side"?** Normal - waiting for one side to drop ≤$0.35. Check market prices in the logs
+- **"Only [Up/Down] cheap, waiting for [other side]"?** FIX 7 - bot won't pile into one side. Waiting for the other side to become cheap (≤$0.35) to hedge
+- **"Low volatility"?** BTC hasn't moved ≥0.15% in the last 3 minutes. Bot skips flat windows to avoid weak entries
+- **"Too late for new position"?** Normal - bot doesn't start new positions after minute 7 of the candle (FIX 6)
+- **"Profit locked"?** Good! The bot has locked in guaranteed profit and stopped buying in this window
 - **No Chainlink updates?** Ensure Polygon RPC URLs are configured correctly
 
 ### Railway Deployment
@@ -243,6 +261,7 @@ src/
 - **"Size lower than minimum: 5"?** The bot enforces Polymarket's 5-share minimum. Order size is calculated as `$3 / price` with a floor of 5 shares
 - **"Order created but no orderID returned"?** Check Railway logs for the actual error. Common causes: fee rate, minimum size, or proxy issues
 - **Bot keeps restarting?** Check Railway logs for errors. Common issues: missing env vars, proxy auth failure, or RPC rate limits
+- **Zero trades for 1+ hour?** Check if both sides are cheap (≤$0.35) and BTC is moving. DipArb requires both conditions
 
 ## Disclaimer
 
