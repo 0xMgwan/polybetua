@@ -711,7 +711,8 @@ async function main() {
           marketSlug: marketSlug,
           marketEndTime: marketEndTime,
           spread: poly.orderbook?.up?.spread ?? null,
-          priceToBeat: ptb
+          priceToBeat: ptb,
+          spotPrice: spotPrice       // Binance real-time BTC price
         };
 
         // Pass indicator data for INDICATOR-FIRST direction decision
@@ -820,8 +821,7 @@ async function main() {
       if (tradingStatus?.enabled) {
         const stats = getTradingStats();
         const statusColor = tradingStatus.dryRun ? ANSI.yellow : ANSI.green;
-        const statusText = tradingStatus.dryRun ? "DRY RUN" : "HYBRID v4";
-        tradingLines.push(kv("TRADING:", `${statusColor}HYBRID v4${ANSI.reset} ${ANSI.dim}(conviction $5 + DipArb $2 fallback)${ANSI.reset}`));
+        tradingLines.push(kv("TRADING:", `${statusColor}SNIPER v5${ANSI.reset} ${ANSI.dim}(react to confirmed BTC moves)${ANSI.reset}`));
         
         if (stats) {
           // P&L Display
@@ -833,28 +833,12 @@ async function main() {
             tradingLines.push(kv("P&L:", `${pnlColor}${pnlSign}$${pnl.totalPnl.toFixed(2)}${ANSI.reset} | ${pnl.wins}W/${pnl.losses}L (${wrColor}${pnl.winRate.toFixed(0)}%${ANSI.reset})`));
           }
           
-          // DipArb v2 Window Display
-          const pw = stats.pairWindow;
-          if (pw) {
-            tradingLines.push(kv("Window:", `${pw.qtyUp} Up ($${pw.costUp.toFixed(2)}) | ${pw.qtyDown} Down ($${pw.costDown.toFixed(2)}) | Buys: ${pw.buys}`));
-            
-            if (pw.pairCost !== null) {
-              const guaranteedProfit = pw.pairs * 1.0 - pw.totalSpent;
-              const profitStr = guaranteedProfit > 0
-                ? `${ANSI.green}+$${guaranteedProfit.toFixed(2)} guaranteed${ANSI.reset}`
-                : `${ANSI.yellow}$${guaranteedProfit.toFixed(2)}${ANSI.reset}`;
-              tradingLines.push(kv("Pairs:", `${pw.pairs} | Cost: $${pw.pairCost.toFixed(3)} | ${profitStr}`));
-            }
-            
-            if (pw.locked) {
-              tradingLines.push(kv("STATUS:", `${ANSI.green}🔒 PROFIT LOCKED${ANSI.reset}`));
-            }
-          } else {
-            tradingLines.push(kv("Status:", `${ANSI.yellow}⏳ Scanning for cheap sides ≤$0.35${ANSI.reset}`));
-          }
-          
-          // Stats
-          tradingLines.push(kv("Windows:", `${stats.windowsCompleted ?? 0} completed | ${stats.tradesThisHour ?? 0} buys/hr`));
+          // Sniper stats
+          const dailyColor = (stats.dailyPnl ?? 0) >= 0 ? ANSI.green : ANSI.red;
+          const dailySign = (stats.dailyPnl ?? 0) >= 0 ? "+" : "";
+          const wr = stats.todaySnipes > 0 ? ((stats.todayWins / stats.todaySnipes) * 100).toFixed(0) : "N/A";
+          tradingLines.push(kv("Today:", `${dailyColor}${dailySign}$${(stats.dailyPnl ?? 0).toFixed(2)}${ANSI.reset} | ${stats.todaySnipes ?? 0} snipes | ${stats.todayWins ?? 0}W (${wr}%)`));
+          tradingLines.push(kv("Sniped:", `${stats.tradedSlugs ?? 0} markets | ${stats.tradesThisHour ?? 0}/hr | ${stats.consecutiveLosses ?? 0} loss streak`));
           
           // Open positions
           if (stats.pnl?.openPositions > 0) {
