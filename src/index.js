@@ -820,8 +820,8 @@ async function main() {
       if (tradingStatus?.enabled) {
         const stats = getTradingStats();
         const statusColor = tradingStatus.dryRun ? ANSI.yellow : ANSI.green;
-        const statusText = tradingStatus.dryRun ? "DRY RUN" : "DIP-ARB";
-        tradingLines.push(kv("TRADING:", `${statusColor}${statusText}${ANSI.reset} ${ANSI.dim}(Leg1→Leg2, $5/window)${ANSI.reset}`));
+        const statusText = tradingStatus.dryRun ? "DRY RUN" : "SMART CHEAP";
+        tradingLines.push(kv("TRADING:", `${statusColor}${statusText}${ANSI.reset} ${ANSI.dim}($3/trade, 1/candle, indicators)${ANSI.reset}`));
         
         if (stats) {
           // P&L Display
@@ -829,53 +829,27 @@ async function main() {
             const pnl = stats.pnl;
             const pnlColor = pnl.totalPnl >= 0 ? ANSI.green : ANSI.red;
             const pnlSign = pnl.totalPnl >= 0 ? "+" : "";
-            tradingLines.push(kv("P&L:", `${pnlColor}${pnlSign}$${pnl.totalPnl.toFixed(2)}${ANSI.reset}`));
+            const wrColor = pnl.winRate >= 50 ? ANSI.green : ANSI.red;
+            tradingLines.push(kv("P&L:", `${pnlColor}${pnlSign}$${pnl.totalPnl.toFixed(2)}${ANSI.reset} | ${pnl.wins}W/${pnl.losses}L (${wrColor}${pnl.winRate.toFixed(0)}%${ANSI.reset})`));
           }
           
-          // DipArb Window Display
-          const pw = stats.pairWindow;
-          if (pw) {
-            // Phase display
-            const phaseColors = { waiting: ANSI.yellow, leg1_filled: ANSI.cyan, completed: ANSI.green, exited: ANSI.red };
-            const phaseIcons = { waiting: "⏳", leg1_filled: "🔄", completed: "✅", exited: "🚪" };
-            const phaseColor = phaseColors[pw.phase] || ANSI.reset;
-            const phaseIcon = phaseIcons[pw.phase] || "";
-            tradingLines.push(kv("Phase:", `${phaseColor}${phaseIcon} ${pw.phase?.toUpperCase()}${ANSI.reset}`));
-            
-            // Leg1 info
-            if (pw.leg1) {
-              tradingLines.push(kv("Leg1:", `${ANSI.green}${pw.leg1.qty}x ${pw.leg1.side} @ $${pw.leg1.avgPrice.toFixed(3)}${ANSI.reset}`));
-            }
-            // Leg2 info
-            if (pw.leg2) {
-              tradingLines.push(kv("Leg2:", `${ANSI.green}${pw.leg2.qty}x ${pw.leg2.side} @ $${pw.leg2.avgPrice.toFixed(3)}${ANSI.reset}`));
-            }
-            
-            // Spent
-            tradingLines.push(kv("Spent:", `$${pw.totalSpent.toFixed(2)} / $5.00 | Buys: ${pw.buys}`));
-            
-            // Pair info (only if both sides)
-            if (pw.pairCost !== null) {
-              const guaranteedProfit = pw.pairs * 1.0 - pw.totalSpent;
-              const profitStr = guaranteedProfit > 0
-                ? `${ANSI.green}+$${guaranteedProfit.toFixed(2)} guaranteed${ANSI.reset}`
-                : `${ANSI.red}$${guaranteedProfit.toFixed(2)} worst${ANSI.reset}`;
-              tradingLines.push(kv("Pair:", `$${pw.pairCost.toFixed(3)} | ${pw.pairs} pairs | ${profitStr}`));
-            }
-            
-            if (pw.locked) {
-              tradingLines.push(kv("STATUS:", `${ANSI.green}🔒 PROFIT LOCKED${ANSI.reset}`));
-            }
+          // Current window / last trade
+          const cw = stats.currentWindow;
+          if (cw?.trade) {
+            const t = cw.trade;
+            const tColor = t.outcome === "Up" ? ANSI.green : ANSI.red;
+            tradingLines.push(kv("Trade:", `${tColor}${t.strategy} ${t.outcome} ${t.size}x @ $${t.price.toFixed(3)} ($${t.cost.toFixed(2)})${ANSI.reset}`));
+            tradingLines.push(kv("Score:", `Bull ${t.bullScore} vs Bear ${t.bearScore}`));
           } else {
-            tradingLines.push(kv("Phase:", `${ANSI.yellow}⏳ Scanning for dips ≤$0.25${ANSI.reset}`));
+            tradingLines.push(kv("Status:", `${ANSI.yellow}Scanning for cheap tokens ≤$0.35 + indicators${ANSI.reset}`));
           }
           
-          // Windows completed
-          tradingLines.push(kv("Windows:", `${stats.windowsCompleted ?? 0} completed | ${stats.tradesThisHour ?? 0} buys/hr`));
+          // Stats
+          tradingLines.push(kv("Trades:", `${stats.windowsCompleted ?? 0} windows | ${stats.tradesThisHour ?? 0}/hr`));
           
           // Open positions
           if (stats.pnl?.openPositions > 0) {
-            tradingLines.push(kv("Open Pos:", `${ANSI.yellow}${stats.pnl.openPositions} awaiting resolution${ANSI.reset}`));
+            tradingLines.push(kv("Open:", `${ANSI.yellow}${stats.pnl.openPositions} awaiting resolution${ANSI.reset}`));
           }
         }
         
