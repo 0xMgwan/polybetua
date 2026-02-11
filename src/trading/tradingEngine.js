@@ -260,21 +260,25 @@ export class TradingEngine {
         return { shouldTrade: false, reason: `Low volatility (${(btcMovePct * 100).toFixed(2)}% < ${this.MIN_BTC_MOVE_PCT}%)` };
       }
 
-      // Buy the cheapest side — but ONLY if both sides are cheap
-      // (ensures we can hedge immediately or next tick)
+      // FIX 7 refinement: Only restrict single-side buys if ONE is cheap and OTHER is expensive
+      // If BOTH are cheap, allow INITIAL buys (they'll hedge quickly)
+      // If ONLY ONE is cheap, skip (wait for both to be cheap)
       if (upCheap && downCheap) {
+        // Both cheap — buy the cheaper one (or either if equal)
         if (upPrice <= downPrice) {
           buyOutcome = "Up"; buyPrice = upPrice;
         } else {
           buyOutcome = "Down"; buyPrice = downPrice;
         }
         buyReason = "INITIAL (both cheap)";
-      } else if (upCheap) {
-        buyOutcome = "Up"; buyPrice = upPrice;
-        buyReason = "INITIAL (Up cheap only)";
-      } else if (downCheap) {
-        buyOutcome = "Down"; buyPrice = downPrice;
-        buyReason = "INITIAL (Down cheap only)";
+      } else if ((upCheap && !downCheap) || (downCheap && !upCheap)) {
+        // Only one side cheap — skip for now (wait for both)
+        const cheapSide = upCheap ? "Up" : "Down";
+        const expensiveSide = upCheap ? "Down" : "Up";
+        const expensivePrice = upCheap ? downPrice : upPrice;
+        console.log(`[DipArb2] ⏳ Only ${cheapSide} cheap, ${expensiveSide} too expensive ($${expensivePrice.toFixed(3)}) — wait for both`);
+        console.log(`[DipArb2] ══════════════════════════════════════`);
+        return { shouldTrade: false, reason: `Only ${cheapSide} cheap ($${(upCheap ? upPrice : downPrice).toFixed(2)}) — wait for both sides ≤$${this.CHEAP_THRESHOLD}` };
       }
     }
 
