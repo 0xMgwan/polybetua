@@ -179,15 +179,15 @@ export class TradingEngine {
     const hColor = indicators.heikenColor;
     const hCount = indicators.heikenCount || 0;
     if (hColor === "green") {
-      // Long streaks (4+) = exhaustion = contrarian (fade the move)
-      if (hCount >= 4) { bearVotes++; votes.push(`HA:BEAR_EXHAUSTED(${hCount})`); }
-      // Normal streaks (2-3) = trend confirmation
+      // Long streaks (6+) = exhaustion = contrarian (fade the move)
+      if (hCount >= 6) { bearVotes++; votes.push(`HA:BEAR_EXHAUSTED(${hCount})`); }
+      // Normal streaks (2-5) = trend confirmation
       else if (hCount >= 2) { bullVotes++; votes.push(`HA:BULL(${hCount})`); }
       else { votes.push(`HA:NEUTRAL`); }
     } else if (hColor === "red") {
-      // Long streaks (4+) = exhaustion = contrarian (fade the move)
-      if (hCount >= 4) { bullVotes++; votes.push(`HA:BULL_EXHAUSTED(${hCount})`); }
-      // Normal streaks (2-3) = trend confirmation
+      // Long streaks (6+) = exhaustion = contrarian (fade the move)
+      if (hCount >= 6) { bullVotes++; votes.push(`HA:BULL_EXHAUSTED(${hCount})`); }
+      // Normal streaks (2-5) = trend confirmation
       else if (hCount >= 2) { bearVotes++; votes.push(`HA:BEAR(${hCount})`); }
       else { votes.push(`HA:NEUTRAL`); }
     } else {
