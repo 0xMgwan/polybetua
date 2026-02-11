@@ -203,14 +203,30 @@ export class TradingEngine {
     const upCheap = upPrice <= this.CHEAP_THRESHOLD && upPrice > 0.05;
     const downCheap = downPrice <= this.CHEAP_THRESHOLD && downPrice > 0.05;
 
-    if (hasUp && !hasDown && downCheap) {
-      // Have Up, need Down to balance → buy Down if cheap
-      buyOutcome = "Down"; buyPrice = downPrice;
-      buyReason = "BALANCE (need Down)";
-    } else if (hasDown && !hasUp && upCheap) {
-      // Have Down, need Up to balance → buy Up if cheap
-      buyOutcome = "Up"; buyPrice = upPrice;
-      buyReason = "BALANCE (need Up)";
+    // ─── FIX 7: NO PILING INTO ONE SIDE ────────────────────
+    // If we have one side but NOT the other, only buy the MISSING side.
+    // Never add more to a side that's already filled — that's just
+    // increasing directional risk with no hedge benefit.
+    // Max 1 unhedged buy ($2 risk), then WAIT for hedge or skip.
+    
+    if (hasUp && !hasDown) {
+      if (downCheap) {
+        buyOutcome = "Down"; buyPrice = downPrice;
+        buyReason = "HEDGE (need Down)";
+      } else {
+        console.log(`[DipArb2] ⏳ Have ${window.qtyUp} Up, waiting for Down ≤$${this.CHEAP_THRESHOLD} (currently $${downPrice.toFixed(3)})`);
+        console.log(`[DipArb2] ══════════════════════════════════════`);
+        return { shouldTrade: false, reason: `Waiting for Down hedge (Down $${downPrice.toFixed(2)} > $${this.CHEAP_THRESHOLD})` };
+      }
+    } else if (hasDown && !hasUp) {
+      if (upCheap) {
+        buyOutcome = "Up"; buyPrice = upPrice;
+        buyReason = "HEDGE (need Up)";
+      } else {
+        console.log(`[DipArb2] ⏳ Have ${window.qtyDown} Down, waiting for Up ≤$${this.CHEAP_THRESHOLD} (currently $${upPrice.toFixed(3)})`);
+        console.log(`[DipArb2] ══════════════════════════════════════`);
+        return { shouldTrade: false, reason: `Waiting for Up hedge (Up $${upPrice.toFixed(2)} > $${this.CHEAP_THRESHOLD})` };
+      }
     } else if (hasUp && hasDown) {
       // Both sides exist — buy the side with FEWER shares if cheap
       if (window.qtyUp < window.qtyDown && upCheap) {
@@ -219,6 +235,15 @@ export class TradingEngine {
       } else if (window.qtyDown < window.qtyUp && downCheap) {
         buyOutcome = "Down"; buyPrice = downPrice;
         buyReason = "REBALANCE (Down qty low)";
+      }
+      // If balanced and both cheap, buy the cheaper one to grow position
+      if (!buyOutcome && upCheap && downCheap) {
+        if (window.qtyUp <= window.qtyDown) {
+          buyOutcome = "Up"; buyPrice = upPrice;
+        } else {
+          buyOutcome = "Down"; buyPrice = downPrice;
+        }
+        buyReason = "GROW (balanced, both cheap)";
       }
     } else {
       // No position yet — FIX 6: only start new position if not too late
@@ -235,7 +260,8 @@ export class TradingEngine {
         return { shouldTrade: false, reason: `Low volatility (${(btcMovePct * 100).toFixed(2)}% < ${this.MIN_BTC_MOVE_PCT}%)` };
       }
 
-      // Buy the cheapest side that qualifies
+      // Buy the cheapest side — but ONLY if both sides are cheap
+      // (ensures we can hedge immediately or next tick)
       if (upCheap && downCheap) {
         if (upPrice <= downPrice) {
           buyOutcome = "Up"; buyPrice = upPrice;
@@ -245,10 +271,10 @@ export class TradingEngine {
         buyReason = "INITIAL (both cheap)";
       } else if (upCheap) {
         buyOutcome = "Up"; buyPrice = upPrice;
-        buyReason = "INITIAL (Up cheap)";
+        buyReason = "INITIAL (Up cheap only)";
       } else if (downCheap) {
         buyOutcome = "Down"; buyPrice = downPrice;
-        buyReason = "INITIAL (Down cheap)";
+        buyReason = "INITIAL (Down cheap only)";
       }
     }
 
