@@ -37,6 +37,7 @@ export class TradingEngine {
     this.CHEAP_THRESHOLD_MID = 0.40; // After min 4 (slightly relaxed)
     this.CHEAP_THRESHOLD_LATE = 0.45;// After min 6 (need to hedge)
     this.HEDGE_THRESHOLD = 0.55;     // Late hedge (min 5+, accept worse price to avoid full loss)
+    this.MAX_OPPOSITE_FOR_ENTRY = 0.55; // CRITICAL: Don't enter INITIAL if opposite side > 55¢ (can't hedge)
     this.IDEAL_THRESHOLD = 0.25;     // Ideal entry (3:1+ R:R)
     this.MAX_PAIR_ASK = 0.985;       // Only enter if Up+Down ≤ 98.5¢ (edge exists)
     
@@ -267,6 +268,30 @@ export class TradingEngine {
         return { shouldTrade: false, reason: `Too late for new position (min ${candleMinute})` };
       }
 
+      // ═══ HEDGEABILITY GATE (most important filter) ═══════════
+      // Data: ALL 3 unhedged losses had opposite side at 65-84¢.
+      // If opposite side > 55¢, we CANNOT hedge → guaranteed directional bet → coin flip.
+      // Institutional rule: NEVER enter a position you can't exit/hedge.
+      const oppositeUp = upPrice;   // price of Up (opposite if we buy Down)
+      const oppositeDown = downPrice; // price of Down (opposite if we buy Up)
+
+      if (upCheap && oppositeDown > this.MAX_OPPOSITE_FOR_ENTRY) {
+        console.log(`[DipArb3] ⛔ HEDGEABILITY: Up cheap ($${upPrice.toFixed(3)}) but Down $${downPrice.toFixed(3)} > $${this.MAX_OPPOSITE_FOR_ENTRY} — can't hedge`);
+        console.log(`[DipArb3] ══════════════════════════════════════`);
+        // Up is cheap but Down is too expensive to hedge → skip
+        if (!downCheap) {
+          return { shouldTrade: false, reason: `Can't hedge: Down $${downPrice.toFixed(2)} > $${this.MAX_OPPOSITE_FOR_ENTRY}` };
+        }
+      }
+      if (downCheap && oppositeUp > this.MAX_OPPOSITE_FOR_ENTRY) {
+        console.log(`[DipArb3] ⛔ HEDGEABILITY: Down cheap ($${downPrice.toFixed(3)}) but Up $${upPrice.toFixed(3)} > $${this.MAX_OPPOSITE_FOR_ENTRY} — can't hedge`);
+        console.log(`[DipArb3] ══════════════════════════════════════`);
+        // Down is cheap but Up is too expensive to hedge → skip
+        if (!upCheap) {
+          return { shouldTrade: false, reason: `Can't hedge: Up $${upPrice.toFixed(2)} > $${this.MAX_OPPOSITE_FOR_ENTRY}` };
+        }
+      }
+
       // OVERREACTION FILTER: Require real BTC move for INITIAL
       if (btcMovePct < this.OVERREACTION_PCT) {
         console.log(`[DipArb3] ⏳ Weak move: BTC Δ3m ${(btcMovePct * 100).toFixed(3)}% < ${(this.OVERREACTION_PCT * 100).toFixed(1)}% — need overreaction`);
@@ -275,36 +300,34 @@ export class TradingEngine {
       }
 
       // DIRECTIONAL FILTER: Only buy cheap side if BTC momentum SUPPORTS it
-      // BTC going UP → Up tokens get expensive, Down gets cheap → only buy Down if BTC is FALLING
-      // BTC going DOWN → Down tokens get expensive, Up gets cheap → only buy Up if BTC is RISING
       // Key insight: cheap side = market thinks it'll lose. Only buy if momentum says market is WRONG.
       if (upCheap && downCheap) {
-        // Both cheap (rare) — buy the one momentum supports
+        // Both cheap (rare & ideal) — buy the one momentum supports
         if (btcDirection === "UP") {
           buyOutcome = "Up"; buyPrice = upPrice;
         } else {
           buyOutcome = "Down"; buyPrice = downPrice;
         }
         buyReason = "INITIAL (both cheap, momentum pick)";
-      } else if (upCheap) {
-        // Up is cheap → market thinks BTC going down → only buy if BTC is actually going UP (market is wrong)
+      } else if (upCheap && oppositeDown <= this.MAX_OPPOSITE_FOR_ENTRY) {
+        // Up cheap AND Down is hedgeable
         if (btcDirection === "UP") {
           buyOutcome = "Up"; buyPrice = upPrice;
-          buyReason = "INITIAL (Up cheap + BTC rising)";
+          buyReason = "INITIAL (Up cheap + BTC rising + hedgeable)";
         } else {
           console.log(`[DipArb3] ⛔ Up cheap ($${upPrice.toFixed(3)}) but BTC going ${btcDirection} — don't buy against momentum`);
           console.log(`[DipArb3] ══════════════════════════════════════`);
-          return { shouldTrade: false, reason: `Up cheap but BTC ${btcDirection} — skip (would buy against trend)` };
+          return { shouldTrade: false, reason: `Up cheap but BTC ${btcDirection} — skip` };
         }
-      } else if (downCheap) {
-        // Down is cheap → market thinks BTC going up → only buy if BTC is actually going DOWN (market is wrong)
+      } else if (downCheap && oppositeUp <= this.MAX_OPPOSITE_FOR_ENTRY) {
+        // Down cheap AND Up is hedgeable
         if (btcDirection === "DOWN") {
           buyOutcome = "Down"; buyPrice = downPrice;
-          buyReason = "INITIAL (Down cheap + BTC falling)";
+          buyReason = "INITIAL (Down cheap + BTC falling + hedgeable)";
         } else {
           console.log(`[DipArb3] ⛔ Down cheap ($${downPrice.toFixed(3)}) but BTC going ${btcDirection} — don't buy against momentum`);
           console.log(`[DipArb3] ══════════════════════════════════════`);
-          return { shouldTrade: false, reason: `Down cheap but BTC ${btcDirection} — skip (would buy against trend)` };
+          return { shouldTrade: false, reason: `Down cheap but BTC ${btcDirection} — skip` };
         }
       }
     }
