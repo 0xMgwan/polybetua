@@ -163,20 +163,36 @@ export class TradingEngine {
       else { votes.push("MACD:NEUTRAL"); }
     }
 
-    // 3. RSI — overbought/oversold with direction
+    // 3. RSI — overbought/oversold with EXHAUSTION detection
     const rsi = indicators.rsi;
     if (rsi !== null && rsi !== undefined) {
-      if (rsi > 55) { bullVotes++; votes.push(`RSI:BULL(${rsi.toFixed(0)})`); }
+      // Extreme RSI (>70 or <30) = exhaustion = contrarian signal
+      if (rsi > 70) { bearVotes++; votes.push(`RSI:BEAR_EXHAUSTED(${rsi.toFixed(0)})`); }
+      else if (rsi < 30) { bullVotes++; votes.push(`RSI:BULL_EXHAUSTED(${rsi.toFixed(0)})`); }
+      // Normal range: 45-55 = neutral, 55-70 = mild bull, 30-45 = mild bear
+      else if (rsi > 55) { bullVotes++; votes.push(`RSI:BULL(${rsi.toFixed(0)})`); }
       else if (rsi < 45) { bearVotes++; votes.push(`RSI:BEAR(${rsi.toFixed(0)})`); }
       else { votes.push(`RSI:NEUTRAL(${rsi.toFixed(0)})`); }
     }
 
-    // 4. HEIKEN ASHI — trend confirmation
+    // 4. HEIKEN ASHI — trend confirmation with EXHAUSTION detection
     const hColor = indicators.heikenColor;
     const hCount = indicators.heikenCount || 0;
-    if (hColor === "green" && hCount >= 2) { bullVotes++; votes.push(`HA:BULL(${hCount})`); }
-    else if (hColor === "red" && hCount >= 2) { bearVotes++; votes.push(`HA:BEAR(${hCount})`); }
-    else { votes.push(`HA:NEUTRAL`); }
+    if (hColor === "green") {
+      // Long streaks (4+) = exhaustion = contrarian (fade the move)
+      if (hCount >= 4) { bearVotes++; votes.push(`HA:BEAR_EXHAUSTED(${hCount})`); }
+      // Normal streaks (2-3) = trend confirmation
+      else if (hCount >= 2) { bullVotes++; votes.push(`HA:BULL(${hCount})`); }
+      else { votes.push(`HA:NEUTRAL`); }
+    } else if (hColor === "red") {
+      // Long streaks (4+) = exhaustion = contrarian (fade the move)
+      if (hCount >= 4) { bullVotes++; votes.push(`HA:BULL_EXHAUSTED(${hCount})`); }
+      // Normal streaks (2-3) = trend confirmation
+      else if (hCount >= 2) { bearVotes++; votes.push(`HA:BEAR(${hCount})`); }
+      else { votes.push(`HA:NEUTRAL`); }
+    } else {
+      votes.push(`HA:NEUTRAL`);
+    }
 
     const direction = bullVotes > bearVotes ? "LONG" : bearVotes > bullVotes ? "SHORT" : "NEUTRAL";
     const score = Math.max(bullVotes, bearVotes);
