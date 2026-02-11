@@ -48,7 +48,7 @@ export class TradingEngine {
     this.HEDGE_DEADLINE_MIN = 2;     // Must hedge by 2 min left or hold
     
     // Wick / momentum filter
-    this.MIN_BTC_MOVE_PCT = 0.30;    // Require ≥0.30% BTC move to trigger entry (was 0.15 — too weak)
+    this.MIN_BTC_MOVE_PCT = 0.20;    // Require ≥0.20% BTC move (0.15 too weak, 0.30 too strict — 0 trades)
     
     // Tracking
     this.lastBuyTime = 0;
