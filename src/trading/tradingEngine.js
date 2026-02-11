@@ -360,6 +360,8 @@ export class TradingEngine {
 
   // ═══════════════════════════════════════════════════════════════
   // EXECUTE TRADE
+  // For PURE_ARB: buys BOTH sides simultaneously (true arb)
+  // For others: buys single directional side
   // ═══════════════════════════════════════════════════════════════
   async executeTrade(signal, marketData, priceToBeat = null) {
     if (!signal.shouldTrade) {
@@ -367,109 +369,234 @@ export class TradingEngine {
     }
 
     try {
-      const tokenId = signal.targetOutcome === "Up" 
-        ? marketData.upTokenId 
-        : marketData.downTokenId;
-
-      if (!tokenId) {
-        return { success: false, reason: "Missing token ID" };
-      }
-
-      const price = Math.min(0.95, signal.marketPrice + 0.003);
-      const MIN_SHARES = 5;
-      
-      // Sizing based on strategy
-      let dollars;
+      // ═══ PURE ARB: BUY BOTH SIDES ═══════════════════════════
       if (signal.strategy === "PURE_ARB") {
-        dollars = signal.arbDollars || this.ARB_SIZE;
-      } else if (signal.strategy === "EXTREME_VALUE") {
-        dollars = signal.extremeDollars || this.EXTREME_SIZE;
-      } else {
-        dollars = signal.moveDollars || this.MOVE_SIZE;
-      }
-      
-      let size = Math.floor(dollars / price);
-      if (size < MIN_SHARES) size = MIN_SHARES;
-      
-      const maxCost = price * size;
-
-      const order = await this.tradingService.placeOrder({
-        tokenId,
-        side: "BUY",
-        price,
-        size,
-        orderType: "GTC"
-      });
-
-      if (!order || !order.orderID) {
-        console.log("[ArbHunter] Order failed - no orderID returned");
-        return { success: false, reason: "Order failed - no orderID returned" };
-      }
-      
-      console.log(`[ArbHunter] ✅ ${signal.strategy}: ${signal.targetOutcome} ${size}x @ $${price.toFixed(3)} = $${maxCost.toFixed(2)}`);
-
-      // Mark this market as traded
-      const slug = marketData.marketSlug || "";
-      if (slug) {
-        const state = this.tradedSlugs.get(slug) || { arb: false, directional: false };
-        if (signal.strategy === "PURE_ARB") {
-          state.arb = true;
-        } else {
-          state.directional = true;
-        }
-        this.tradedSlugs.set(slug, state);
+        return await this._executeArbTrade(signal, marketData, priceToBeat);
       }
 
-      this.lastTradeTime = Date.now();
-      this.lastBuyTime = Date.now();
-      this.hourlyTrades.push(Date.now());
-      
-      const trade = {
-        timestamp: Date.now(),
-        direction: signal.direction,
-        outcome: signal.targetOutcome,
-        confidence: signal.confidence,
-        edge: signal.edge,
-        price, size, cost: maxCost,
-        orderId: order.orderID,
-        marketSlug: marketData.marketSlug
-      };
-
-      this.tradeHistory.push(trade);
-
-      // Track by strategy type
-      this.todayTrades++;
-      if (signal.strategy === "PURE_ARB") this.todayArbs++;
-      else if (signal.strategy === "EXTREME_VALUE") this.todayExtremes++;
-      else this.todayMoves++;
-
-      // Track position for P&L
-      this.positionTracker.addPosition({
-        orderId: order.orderID,
-        direction: signal.direction,
-        outcome: signal.targetOutcome,
-        price, size,
-        confidence: signal.confidence,
-        edge: signal.edge,
-        marketSlug: marketData.marketSlug,
-        marketEndTime: marketData.marketEndTime || null,
-        priceToBeat,
-        upPrice: marketData.upPrice,
-        downPrice: marketData.downPrice,
-        indicators: {},
-        bullScore: signal.bullScore || 0, bearScore: signal.bearScore || 0,
-        signals: signal.signals || [],
-        strategy: signal.strategy || "ARB_HUNTER"
-      });
-
-      return {
-        success: true, trade, order,
-        reason: `${signal.strategy} ${signal.targetOutcome} ${size}x @ $${price.toFixed(3)} ($${maxCost.toFixed(2)})`
-      };
+      // ═══ DIRECTIONAL: BUY ONE SIDE ══════════════════════════
+      return await this._executeDirectionalTrade(signal, marketData, priceToBeat);
 
     } catch (error) {
       return { success: false, reason: `Trade failed: ${error.message}`, error };
     }
+  }
+
+  // ─── ARB: Buy BOTH Up AND Down simultaneously ────────────────
+  async _executeArbTrade(signal, marketData, priceToBeat) {
+    const upTokenId = marketData.upTokenId;
+    const downTokenId = marketData.downTokenId;
+
+    if (!upTokenId || !downTokenId) {
+      return { success: false, reason: "Missing token IDs for arb (need both Up and Down)" };
+    }
+
+    const upPrice = marketData.upPrice;
+    const downPrice = marketData.downPrice;
+    const dollars = signal.arbDollars || this.ARB_SIZE;
+    const MIN_SHARES = 5;
+
+    // Calculate shares — buy EQUAL qty of both sides
+    // Use the more expensive side to determine qty (so we can afford both)
+    const maxPrice = Math.max(upPrice, downPrice);
+    const halfDollars = dollars / 2;
+    let size = Math.floor(halfDollars / maxPrice);
+    if (size < MIN_SHARES) size = MIN_SHARES;
+
+    const upBuyPrice = Math.min(0.95, upPrice + 0.003);
+    const downBuyPrice = Math.min(0.95, downPrice + 0.003);
+    const totalCost = (upBuyPrice * size) + (downBuyPrice * size);
+
+    console.log(`[ArbHunter] 💰 ARB: Buying BOTH sides — Up ${size}x @ $${upBuyPrice.toFixed(3)} + Down ${size}x @ $${downBuyPrice.toFixed(3)} = $${totalCost.toFixed(2)}`);
+
+    // Place BOTH orders simultaneously
+    const [upOrder, downOrder] = await Promise.allSettled([
+      this.tradingService.placeOrder({
+        tokenId: upTokenId,
+        side: "BUY",
+        price: upBuyPrice,
+        size,
+        orderType: "GTC"
+      }),
+      this.tradingService.placeOrder({
+        tokenId: downTokenId,
+        side: "BUY",
+        price: downBuyPrice,
+        size,
+        orderType: "GTC"
+      })
+    ]);
+
+    const upOk = upOrder.status === "fulfilled" && upOrder.value?.orderID;
+    const downOk = downOrder.status === "fulfilled" && downOrder.value?.orderID;
+
+    if (!upOk && !downOk) {
+      console.log("[ArbHunter] ❌ ARB FAILED: Both orders failed");
+      return { success: false, reason: "Both arb orders failed" };
+    }
+
+    if (!upOk || !downOk) {
+      // Only one leg filled — this is dangerous, log it clearly
+      const filledSide = upOk ? "Up" : "Down";
+      const failedSide = upOk ? "Down" : "Up";
+      const failedReason = upOk 
+        ? (downOrder.reason?.message || "unknown") 
+        : (upOrder.reason?.message || "unknown");
+      console.log(`[ArbHunter] ⚠️ ARB PARTIAL: ${filledSide} filled, ${failedSide} FAILED (${failedReason})`);
+      console.log(`[ArbHunter] ⚠️ This is now a DIRECTIONAL bet, not an arb!`);
+    } else {
+      const payout = size * 1.0; // One side always pays $1/share
+      const profit = payout - totalCost;
+      console.log(`[ArbHunter] ✅ ARB COMPLETE: Both legs filled! Cost: $${totalCost.toFixed(2)} | Payout: $${payout.toFixed(2)} | Guaranteed profit: $${profit.toFixed(2)}`);
+    }
+
+    // Mark market as arb-traded
+    const slug = marketData.marketSlug || "";
+    if (slug) {
+      const state = this.tradedSlugs.get(slug) || { arb: false, directional: false };
+      state.arb = true;
+      this.tradedSlugs.set(slug, state);
+    }
+
+    this.lastTradeTime = Date.now();
+    this.lastBuyTime = Date.now();
+    this.hourlyTrades.push(Date.now());
+    this.todayTrades++;
+    this.todayArbs++;
+
+    // Record positions for both legs
+    if (upOk) {
+      const upCost = upBuyPrice * size;
+      this.tradeHistory.push({
+        timestamp: Date.now(), direction: "LONG", outcome: "Up",
+        confidence: 95, edge: signal.edge,
+        price: upBuyPrice, size, cost: upCost,
+        orderId: upOrder.value.orderID, marketSlug: marketData.marketSlug
+      });
+      this.positionTracker.addPosition({
+        orderId: upOrder.value.orderID, direction: "LONG", outcome: "Up",
+        price: upBuyPrice, size, confidence: 95, edge: signal.edge,
+        marketSlug: marketData.marketSlug, marketEndTime: marketData.marketEndTime || null,
+        priceToBeat, upPrice, downPrice,
+        indicators: {}, bullScore: 0, bearScore: 0,
+        signals: signal.signals || [], strategy: "PURE_ARB_UP"
+      });
+    }
+    if (downOk) {
+      const downCost = downBuyPrice * size;
+      this.tradeHistory.push({
+        timestamp: Date.now(), direction: "SHORT", outcome: "Down",
+        confidence: 95, edge: signal.edge,
+        price: downBuyPrice, size, cost: downCost,
+        orderId: downOrder.value.orderID, marketSlug: marketData.marketSlug
+      });
+      this.positionTracker.addPosition({
+        orderId: downOrder.value.orderID, direction: "SHORT", outcome: "Down",
+        price: downBuyPrice, size, confidence: 95, edge: signal.edge,
+        marketSlug: marketData.marketSlug, marketEndTime: marketData.marketEndTime || null,
+        priceToBeat, upPrice, downPrice,
+        indicators: {}, bullScore: 0, bearScore: 0,
+        signals: signal.signals || [], strategy: "PURE_ARB_DOWN"
+      });
+    }
+
+    return {
+      success: true,
+      reason: `💰 ARB: Up ${size}x @ $${upBuyPrice.toFixed(3)} + Down ${size}x @ $${downBuyPrice.toFixed(3)} = $${totalCost.toFixed(2)} | ${upOk && downOk ? 'BOTH LEGS ✅' : 'PARTIAL ⚠️'}`
+    };
+  }
+
+  // ─── DIRECTIONAL: Buy one side (extreme value or confirmed move) ─
+  async _executeDirectionalTrade(signal, marketData, priceToBeat) {
+    const tokenId = signal.targetOutcome === "Up" 
+      ? marketData.upTokenId 
+      : marketData.downTokenId;
+
+    if (!tokenId) {
+      return { success: false, reason: "Missing token ID" };
+    }
+
+    const price = Math.min(0.95, signal.marketPrice + 0.003);
+    const MIN_SHARES = 5;
+    
+    let dollars;
+    if (signal.strategy === "EXTREME_VALUE") {
+      dollars = signal.extremeDollars || this.EXTREME_SIZE;
+    } else {
+      dollars = signal.moveDollars || this.MOVE_SIZE;
+    }
+    
+    let size = Math.floor(dollars / price);
+    if (size < MIN_SHARES) size = MIN_SHARES;
+    
+    const maxCost = price * size;
+
+    const order = await this.tradingService.placeOrder({
+      tokenId,
+      side: "BUY",
+      price,
+      size,
+      orderType: "GTC"
+    });
+
+    if (!order || !order.orderID) {
+      console.log("[ArbHunter] Order failed - no orderID returned");
+      return { success: false, reason: "Order failed - no orderID returned" };
+    }
+    
+    console.log(`[ArbHunter] ✅ ${signal.strategy}: ${signal.targetOutcome} ${size}x @ $${price.toFixed(3)} = $${maxCost.toFixed(2)}`);
+
+    // Mark this market as traded
+    const slug = marketData.marketSlug || "";
+    if (slug) {
+      const state = this.tradedSlugs.get(slug) || { arb: false, directional: false };
+      state.directional = true;
+      this.tradedSlugs.set(slug, state);
+    }
+
+    this.lastTradeTime = Date.now();
+    this.lastBuyTime = Date.now();
+    this.hourlyTrades.push(Date.now());
+    
+    const trade = {
+      timestamp: Date.now(),
+      direction: signal.direction,
+      outcome: signal.targetOutcome,
+      confidence: signal.confidence,
+      edge: signal.edge,
+      price, size, cost: maxCost,
+      orderId: order.orderID,
+      marketSlug: marketData.marketSlug
+    };
+
+    this.tradeHistory.push(trade);
+
+    this.todayTrades++;
+    if (signal.strategy === "EXTREME_VALUE") this.todayExtremes++;
+    else this.todayMoves++;
+
+    this.positionTracker.addPosition({
+      orderId: order.orderID,
+      direction: signal.direction,
+      outcome: signal.targetOutcome,
+      price, size,
+      confidence: signal.confidence,
+      edge: signal.edge,
+      marketSlug: marketData.marketSlug,
+      marketEndTime: marketData.marketEndTime || null,
+      priceToBeat,
+      upPrice: marketData.upPrice,
+      downPrice: marketData.downPrice,
+      indicators: {},
+      bullScore: signal.bullScore || 0, bearScore: signal.bearScore || 0,
+      signals: signal.signals || [],
+      strategy: signal.strategy || "ARB_HUNTER"
+    });
+
+    return {
+      success: true, trade, order,
+      reason: `${signal.strategy} ${signal.targetOutcome} ${size}x @ $${price.toFixed(3)} ($${maxCost.toFixed(2)})`
+    };
   }
 
   // Called when a position resolves
