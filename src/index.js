@@ -821,7 +821,7 @@ async function main() {
       if (tradingStatus?.enabled) {
         const stats = getTradingStats();
         const statusColor = tradingStatus.dryRun ? ANSI.yellow : ANSI.green;
-        tradingLines.push(kv("TRADING:", `${statusColor}SNIPER v5${ANSI.reset} ${ANSI.dim}(react to confirmed BTC moves)${ANSI.reset}`));
+        tradingLines.push(kv("TRADING:", `${statusColor}ARB HUNTER v6${ANSI.reset} ${ANSI.dim}(arb + extreme value + confirmed moves)${ANSI.reset}`));
         
         if (stats) {
           // P&L Display
@@ -833,12 +833,12 @@ async function main() {
             tradingLines.push(kv("P&L:", `${pnlColor}${pnlSign}$${pnl.totalPnl.toFixed(2)}${ANSI.reset} | ${pnl.wins}W/${pnl.losses}L (${wrColor}${pnl.winRate.toFixed(0)}%${ANSI.reset})`));
           }
           
-          // Sniper stats
+          // ARB HUNTER stats
           const dailyColor = (stats.dailyPnl ?? 0) >= 0 ? ANSI.green : ANSI.red;
           const dailySign = (stats.dailyPnl ?? 0) >= 0 ? "+" : "";
-          const wr = stats.todaySnipes > 0 ? ((stats.todayWins / stats.todaySnipes) * 100).toFixed(0) : "N/A";
-          tradingLines.push(kv("Today:", `${dailyColor}${dailySign}$${(stats.dailyPnl ?? 0).toFixed(2)}${ANSI.reset} | ${stats.todaySnipes ?? 0} snipes | ${stats.todayWins ?? 0}W (${wr}%)`));
-          tradingLines.push(kv("Sniped:", `${stats.tradedSlugs ?? 0} markets | ${stats.tradesThisHour ?? 0}/hr | ${stats.consecutiveLosses ?? 0} loss streak`));
+          const wr = stats.todayTrades > 0 ? ((stats.todayWins / stats.todayTrades) * 100).toFixed(0) : "N/A";
+          tradingLines.push(kv("Today:", `${dailyColor}${dailySign}$${(stats.dailyPnl ?? 0).toFixed(2)}${ANSI.reset} | ${stats.todayTrades ?? 0} trades | ${stats.todayWins ?? 0}W (${wr}%)`));
+          tradingLines.push(kv("Strats:", `💰Arb:${stats.todayArbs ?? 0} | 🎰Ext:${stats.todayExtremes ?? 0} | 🎯Mov:${stats.todayMoves ?? 0} | ${stats.tradesThisHour ?? 0}/hr`));
           
           // Open positions
           if (stats.pnl?.openPositions > 0) {

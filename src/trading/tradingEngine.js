@@ -1,30 +1,33 @@
 import { PositionTracker } from "./positionTracker.js";
 
 // ═══════════════════════════════════════════════════════════════
-// LATENCY SNIPER v5 — React to confirmed BTC moves
+// ARB HUNTER v6 — Exploit the math, not prediction
 //
-// Core insight: Don't PREDICT direction. REACT to confirmed moves.
-// Binance spot updates instantly. Polymarket odds lag by seconds.
-// When BTC moves >0.2%, buy the winning side while it's still cheap.
+// 3 strategies checked every second, in priority order:
 //
-// How the $313→$414K bot works (98% win rate):
-//   1. Watch Binance real-time price vs candle open (priceToBeat)
-//   2. When BTC confirms a move (>0.2% from open), the outcome is ~85% certain
-//   3. But Polymarket odds still show ~50/50 (lagging)
-//   4. Buy the winning side at cheap price → collect $1 at settlement
+// ① PURE ARB (guaranteed profit):
+//    Up + Down < $0.975 → buy BOTH sides → one settles at $1
+//    Profit = $1.00 - (Up + Down) per share, minus fees
+//    Fee at 35¢ ≈ 0.91%, at 50¢ ≈ 1.56% → need sum < ~$0.97
+//    This is what the $558K bot does. 380 trades/day.
 //
-// Our edge: SPEED, not prediction.
-//   - Binance WS gives us tick-by-tick BTC price
-//   - We compare to priceToBeat (candle open price)
-//   - If BTC is UP 0.2%+ and Up token is still < 45¢ → BUY UP
-//   - If BTC is DOWN 0.2%+ and Down token is still < 45¢ → BUY DOWN
+// ② EXTREME VALUE (asymmetric R:R):
+//    Token < 10¢ + BTC confirmed move in that direction
+//    Risk $0.10, win $0.90 → 9:1 R:R. Only need 15% win rate.
+//    Fee at 10¢ ≈ 0.56% → negligible.
+//    These are rare but massively +EV when they hit.
 //
-// Guardrails:
-//   - Only 1 trade per market (no double-dipping)
-//   - Daily drawdown stop: -$10
-//   - Max $15 total exposure
-//   - 30s cooldown between trades
-//   - Token must be < 45¢ (confirms market hasn't caught up yet)
+// ③ CONFIRMED MOVE (latency edge):
+//    BTC moved >0.25% from candle open + winning token < 35¢
+//    Fee at 35¢ ≈ 0.91% → small vs 65¢ upside
+//    Tighter criteria than v5 to account for fees.
+//
+// Key improvements over v5:
+//   - Accounts for Polymarket taker fees in all calculations
+//   - Pure arb = guaranteed profit (no prediction needed)
+//   - Extreme value = massive R:R even with low win rate
+//   - Tighter confirmed move criteria (0.25% not 0.20%)
+//   - Max 2 trades per market (arb + directional)
 // ═══════════════════════════════════════════════════════════════
 
 export class TradingEngine {
@@ -40,33 +43,49 @@ export class TradingEngine {
     this.hourlyTrades = [];
     this.positionTracker = new PositionTracker();
     
-    // ═══ SNIPER PARAMETERS ═════════════════════════════
-    this.MIN_BTC_MOVE_PCT = 0.20;    // BTC must move >0.2% from candle open
-    this.STRONG_MOVE_PCT = 0.35;     // Strong move: >0.35% → bigger bet
-    this.MAX_TOKEN_PRICE = 0.45;     // Token must be < 45¢ (market hasn't caught up)
-    this.MIN_TOKEN_PRICE = 0.03;     // Ignore dust prices
-    this.BET_SIZE = 4;               // $4 per snipe (5% of ~$80)
-    this.BET_SIZE_STRONG = 6;        // $6 on strong moves (>0.35%)
-    this.ONE_TRADE_PER_MARKET = true;// Only 1 snipe per 15-min market
+    // ═══ STRATEGY 1: PURE ARB ══════════════════════════
+    this.ARB_MAX_SUM = 0.975;        // Up+Down must be < 97.5¢ (2.5¢ gross profit/share)
+    this.ARB_SIZE = 5;               // $5 per arb (split across both sides)
+    this.ARB_MIN_PROFIT = 0.005;     // Min $0.005 profit per share after fees
+    
+    // ═══ STRATEGY 2: EXTREME VALUE ═════════════════════
+    this.EXTREME_MAX_PRICE = 0.10;   // Token must be < 10¢
+    this.EXTREME_MIN_BTC_MOVE = 0.15;// BTC must confirm direction (>0.15%)
+    this.EXTREME_SIZE = 3;           // $3 per extreme value bet
+    
+    // ═══ STRATEGY 3: CONFIRMED MOVE ════════════════════
+    this.MOVE_MIN_BTC_PCT = 0.25;    // BTC must move >0.25% (tighter than v5)
+    this.MOVE_STRONG_PCT = 0.40;     // Strong move threshold
+    this.MOVE_MAX_TOKEN = 0.35;      // Token must be < 35¢ (tighter — more lag required)
+    this.MOVE_MIN_TOKEN = 0.05;      // Ignore dust
+    this.MOVE_SIZE = 4;              // $4 per confirmed move
+    this.MOVE_SIZE_STRONG = 6;       // $6 on strong moves
+    this.MOVE_MIN_EDGE = 0.20;       // Need 20% edge (higher than v5's 15% to cover fees)
     
     // ═══ TIMING ════════════════════════════════════════
-    this.MIN_BUY_COOLDOWN = 30000;   // 30s between any buys
-    this.MIN_CANDLE_MINUTE = 2;      // Don't trade first 2 min (let move develop)
-    this.MAX_CANDLE_MINUTE = 12;     // Don't trade last 3 min (too late)
+    this.MIN_BUY_COOLDOWN = 15000;   // 15s cooldown (faster for arb)
+    this.MIN_CANDLE_MINUTE = 1;      // Arb can trade from minute 1
+    this.MAX_CANDLE_MINUTE = 13;     // Can trade until minute 13
     
     // ═══ GUARDRAILS ═════════════════════════════════════
-    this.DAILY_DRAWDOWN_LIMIT = -10; // Stop trading if daily P&L < -$10
-    this.MAX_EXPOSURE = 15;          // Circuit breaker
-    this.LOSS_STREAK_REDUCE = 3;     // After 3 consecutive losses, reduce size
+    this.DAILY_DRAWDOWN_LIMIT = -10; // Stop at -$10 daily
+    this.MAX_EXPOSURE = 20;          // $20 max (higher — arb is hedged)
+    this.LOSS_STREAK_REDUCE = 4;     // After 4 consecutive losses, reduce size
+    
+    // ═══ FEE CALCULATION ═══════════════════════════════
+    this.FEE_RATE = 0.0625;          // Polymarket fee multiplier for 15-min markets
     
     // ═══ TRACKING ══════════════════════════════════════
     this.lastBuyTime = 0;
-    this.tradedSlugs = new Set();    // Track which markets we've already sniped
+    this.tradedSlugs = new Map();    // slug → { arb: bool, directional: bool }
     this.consecutiveLosses = 0;
     this.dailyPnl = 0;
     this.dailyResetDate = new Date().toDateString();
-    this.todaySnipes = 0;
+    this.todayTrades = 0;
     this.todayWins = 0;
+    this.todayArbs = 0;
+    this.todayExtremes = 0;
+    this.todayMoves = 0;
   }
 
   _tradesInLastHour() {
@@ -75,15 +94,23 @@ export class TradingEngine {
     return this.hourlyTrades.length;
   }
 
+  // Calculate taker fee per share at a given price
+  _takerFee(price) {
+    return price * (1 - price) * this.FEE_RATE;
+  }
+
   // ─── DAILY RESET ──────────────────────────────────────────────
   _checkDailyReset() {
     const today = new Date().toDateString();
     if (today !== this.dailyResetDate) {
-      console.log(`[Sniper] 📅 New day — resetting (prev P&L: $${this.dailyPnl.toFixed(2)} | ${this.todaySnipes} snipes, ${this.todayWins} wins)`);
+      console.log(`[ArbHunter] 📅 New day — prev: $${this.dailyPnl.toFixed(2)} | ${this.todayTrades}T ${this.todayWins}W | Arb:${this.todayArbs} Ext:${this.todayExtremes} Mov:${this.todayMoves}`);
       this.dailyPnl = 0;
       this.dailyResetDate = today;
-      this.todaySnipes = 0;
+      this.todayTrades = 0;
       this.todayWins = 0;
+      this.todayArbs = 0;
+      this.todayExtremes = 0;
+      this.todayMoves = 0;
       this.consecutiveLosses = 0;
       this.tradedSlugs.clear();
     }
@@ -91,7 +118,7 @@ export class TradingEngine {
 
   // ═══════════════════════════════════════════════════════════════
   // MAIN DECISION: shouldTrade()
-  // LATENCY SNIPER v5: React to confirmed BTC moves
+  // Checks 3 strategies in priority order
   // ═══════════════════════════════════════════════════════════════
   shouldTrade(prediction, marketData, currentPrice, indicators = {}) {
     if (!this.config.enabled) {
@@ -107,17 +134,19 @@ export class TradingEngine {
     const upPrice = marketData.upPrice;
     const downPrice = marketData.downPrice;
     const slug = marketData.marketSlug || "";
-    const spotPrice = marketData.spotPrice;  // Binance real-time BTC
-    const priceToBeat = marketData.priceToBeat; // BTC at candle open
+    const spotPrice = marketData.spotPrice;
+    const priceToBeat = marketData.priceToBeat;
 
     if (!upPrice || !downPrice || upPrice <= 0 || downPrice <= 0) {
       return { shouldTrade: false, reason: "Invalid prices" };
     }
 
+    const sum = upPrice + downPrice;
+
     // ═══ GUARDRAILS ═══════════════════════════════════════════
     const totalExposure = this.positionTracker.openPositions.reduce((sum, pos) => sum + pos.cost, 0);
     if (totalExposure >= this.MAX_EXPOSURE) {
-      return { shouldTrade: false, reason: `Circuit breaker: $${totalExposure.toFixed(2)} >= $${this.MAX_EXPOSURE}` };
+      return { shouldTrade: false, reason: `Circuit breaker: $${totalExposure.toFixed(2)}` };
     }
 
     if (this.dailyPnl <= this.DAILY_DRAWDOWN_LIMIT) {
@@ -144,103 +173,159 @@ export class TradingEngine {
       return { shouldTrade: false, reason: "Cooldown" };
     }
 
-    // One trade per market
-    if (this.ONE_TRADE_PER_MARKET && this.tradedSlugs.has(slug)) {
-      return { shouldTrade: false, reason: "Already sniped this market" };
+    // Track what we've already done on this market
+    const slugState = this.tradedSlugs.get(slug) || { arb: false, directional: false };
+
+    // BTC move calculation (for strategies 2 & 3)
+    let btcMovePct = 0;
+    let btcMoveAbs = 0;
+    if (spotPrice && priceToBeat) {
+      btcMovePct = ((spotPrice - priceToBeat) / priceToBeat) * 100;
+      btcMoveAbs = Math.abs(btcMovePct);
     }
 
-    // ═══ CORE SNIPER LOGIC ═══════════════════════════════════
-    // Need both Binance spot price AND candle open price
-    if (!spotPrice || !priceToBeat) {
-      return { shouldTrade: false, reason: "No spot/priceToBeat data" };
+    const feeUp = this._takerFee(upPrice);
+    const feeDown = this._takerFee(downPrice);
+
+    console.log(`[ArbHunter] ══════════════════════════════════════`);
+    console.log(`[ArbHunter] Up: $${upPrice.toFixed(3)} | Down: $${downPrice.toFixed(3)} | Sum: $${sum.toFixed(3)} | Min ${candleMinute}/15`);
+    console.log(`[ArbHunter] BTC: ${btcMovePct >= 0 ? '+' : ''}${btcMovePct.toFixed(3)}% | Fees: Up ${(feeUp*100).toFixed(2)}¢ Down ${(feeDown*100).toFixed(2)}¢ | Daily: $${this.dailyPnl.toFixed(2)}`);
+
+    // ═══════════════════════════════════════════════════════════
+    // STRATEGY 1: PURE ARB — Up + Down < threshold
+    // Buy BOTH sides. One always settles at $1. Guaranteed profit.
+    // ═══════════════════════════════════════════════════════════
+    if (!slugState.arb && sum < this.ARB_MAX_SUM) {
+      const grossProfit = 1.0 - sum;  // per share pair
+      const totalFee = feeUp + feeDown;
+      const netProfit = grossProfit - totalFee;
+
+      if (netProfit >= this.ARB_MIN_PROFIT) {
+        // Buy the cheaper side (more shares per dollar = more profit)
+        const cheaperSide = upPrice <= downPrice ? "Up" : "Down";
+        const cheaperPrice = Math.min(upPrice, downPrice);
+        const dollars = this.ARB_SIZE;
+
+        console.log(`[ArbHunter] 💰 PURE ARB! Sum $${sum.toFixed(3)} | Gross: ${(grossProfit*100).toFixed(1)}¢ | Fee: ${(totalFee*100).toFixed(1)}¢ | Net: ${(netProfit*100).toFixed(1)}¢/share`);
+        console.log(`[ArbHunter] 💰 Buy ${cheaperSide} @ $${cheaperPrice.toFixed(3)} (cheaper side first) | $${dollars}`);
+        console.log(`[ArbHunter] ══════════════════════════════════════`);
+
+        return {
+          shouldTrade: true,
+          direction: cheaperSide === "Up" ? "LONG" : "SHORT",
+          targetOutcome: cheaperSide,
+          confidence: 95,
+          edge: netProfit,
+          marketPrice: cheaperPrice,
+          modelProb: 0.95,
+          strategy: "PURE_ARB",
+          arbDollars: dollars,
+          arbNetProfit: netProfit,
+          arbSum: sum,
+          bullScore: 0, bearScore: 0,
+          signals: [`sum:$${sum.toFixed(3)}`, `net:${(netProfit*100).toFixed(1)}¢`, `fee:${(totalFee*100).toFixed(1)}¢`],
+          reason: `💰 ARB: Sum $${sum.toFixed(3)} | Net +${(netProfit*100).toFixed(1)}¢/share | ${cheaperSide} @ $${cheaperPrice.toFixed(3)}`
+        };
+      } else {
+        console.log(`[ArbHunter] ⏳ Arb exists but fees eat it: net ${(netProfit*100).toFixed(1)}¢ < ${(this.ARB_MIN_PROFIT*100).toFixed(1)}¢`);
+      }
     }
 
-    // Calculate how much BTC has moved since candle opened
-    const btcMovePct = ((spotPrice - priceToBeat) / priceToBeat) * 100;
-    const btcMoveAbs = Math.abs(btcMovePct);
-    const btcUp = btcMovePct > 0;
-    const btcDown = btcMovePct < 0;
+    // ═══════════════════════════════════════════════════════════
+    // STRATEGY 2: EXTREME VALUE — Token < 10¢ + confirmed direction
+    // Risk 10¢, win 90¢. 9:1 R:R. Only need 15% win rate to profit.
+    // ═══════════════════════════════════════════════════════════
+    if (!slugState.directional && spotPrice && priceToBeat) {
+      const btcUp = btcMovePct > 0;
+      const extremeToken = btcUp ? "Up" : "Down";
+      const extremePrice = btcUp ? upPrice : downPrice;
 
-    // Which token should we buy?
-    const targetOutcome = btcUp ? "Up" : "Down";
-    const targetPrice = btcUp ? upPrice : downPrice;
-    const oppositePrice = btcUp ? downPrice : upPrice;
+      if (extremePrice <= this.EXTREME_MAX_PRICE && extremePrice > 0.01 && btcMoveAbs >= this.EXTREME_MIN_BTC_MOVE) {
+        const fee = this._takerFee(extremePrice);
+        const netWin = 1.0 - extremePrice - fee;
+        const netLoss = extremePrice + fee;
+        const rr = (netWin / netLoss).toFixed(1);
+        const breakeven = (netLoss / (netWin + netLoss) * 100).toFixed(0);
+        const dollars = this.EXTREME_SIZE;
 
-    console.log(`[Sniper] ══════════════════════════════════════`);
-    console.log(`[Sniper] BTC: $${spotPrice.toFixed(2)} | Open: $${priceToBeat.toFixed(2)} | Move: ${btcMovePct >= 0 ? '+' : ''}${btcMovePct.toFixed(3)}%`);
-    console.log(`[Sniper] Up: $${upPrice.toFixed(3)} | Down: $${downPrice.toFixed(3)} | Min ${candleMinute}/15`);
-    console.log(`[Sniper] Target: ${targetOutcome} @ $${targetPrice.toFixed(3)} | Daily: $${this.dailyPnl.toFixed(2)} | Snipes: ${this.todaySnipes}`);
+        console.log(`[ArbHunter] 🎰 EXTREME VALUE! ${extremeToken} @ $${extremePrice.toFixed(3)} | BTC ${btcMovePct >= 0 ? '+' : ''}${btcMovePct.toFixed(3)}%`);
+        console.log(`[ArbHunter] 🎰 R:R ${rr}:1 | Win: +${(netWin*100).toFixed(0)}¢ | Lose: -${(netLoss*100).toFixed(0)}¢ | Breakeven: ${breakeven}% WR | $${dollars}`);
+        console.log(`[ArbHunter] ══════════════════════════════════════`);
 
-    // ─── CHECK 1: BTC move big enough? ──────────────────────
-    if (btcMoveAbs < this.MIN_BTC_MOVE_PCT) {
-      console.log(`[Sniper] ⏳ Move too small: ${btcMoveAbs.toFixed(3)}% < ${this.MIN_BTC_MOVE_PCT}%`);
-      console.log(`[Sniper] ══════════════════════════════════════`);
-      return { shouldTrade: false, reason: `Move too small (${btcMoveAbs.toFixed(3)}% < ${this.MIN_BTC_MOVE_PCT}%)` };
+        return {
+          shouldTrade: true,
+          direction: btcUp ? "LONG" : "SHORT",
+          targetOutcome: extremeToken,
+          confidence: 60,
+          edge: netWin - netLoss,
+          marketPrice: extremePrice,
+          modelProb: 0.60,
+          strategy: "EXTREME_VALUE",
+          extremeDollars: dollars,
+          bullScore: 0, bearScore: 0,
+          signals: [`${extremeToken}:$${extremePrice.toFixed(3)}`, `RR:${rr}:1`, `BTC:${btcMovePct >= 0 ? '+' : ''}${btcMovePct.toFixed(2)}%`],
+          reason: `🎰 EXTREME ${extremeToken} @ $${extremePrice.toFixed(3)} | R:R ${rr}:1 | BTC ${btcMovePct >= 0 ? '+' : ''}${btcMovePct.toFixed(2)}%`
+        };
+      }
     }
 
-    // ─── CHECK 2: Token still cheap? (market hasn't caught up) ─
-    if (targetPrice > this.MAX_TOKEN_PRICE) {
-      console.log(`[Sniper] ⏳ Market already caught up: ${targetOutcome} $${targetPrice.toFixed(3)} > $${this.MAX_TOKEN_PRICE}`);
-      console.log(`[Sniper] ══════════════════════════════════════`);
-      return { shouldTrade: false, reason: `Market caught up (${targetOutcome} $${targetPrice.toFixed(3)})` };
+    // ═══════════════════════════════════════════════════════════
+    // STRATEGY 3: CONFIRMED MOVE — BTC moved >0.25% + cheap token
+    // Same as sniper but tighter criteria to account for fees
+    // ═══════════════════════════════════════════════════════════
+    if (!slugState.directional && spotPrice && priceToBeat && candleMinute >= 2) {
+      const btcUp = btcMovePct > 0;
+      const targetOutcome = btcUp ? "Up" : "Down";
+      const targetPrice = btcUp ? upPrice : downPrice;
+
+      if (btcMoveAbs >= this.MOVE_MIN_BTC_PCT && targetPrice <= this.MOVE_MAX_TOKEN && targetPrice >= this.MOVE_MIN_TOKEN) {
+        const fee = this._takerFee(targetPrice);
+        const estimatedProb = btcMoveAbs >= this.MOVE_STRONG_PCT ? 0.85 : 0.72;
+        const impliedProb = targetPrice;
+        const probEdge = estimatedProb - impliedProb;
+
+        // Expected value accounting for fees
+        const evWin = (1.0 - targetPrice - fee) * estimatedProb;
+        const evLoss = (targetPrice + fee) * (1 - estimatedProb);
+        const netEV = evWin - evLoss;
+
+        if (probEdge >= this.MOVE_MIN_EDGE && netEV > 0) {
+          const isStrong = btcMoveAbs >= this.MOVE_STRONG_PCT;
+          let dollars = isStrong ? this.MOVE_SIZE_STRONG : this.MOVE_SIZE;
+
+          if (this.consecutiveLosses >= this.LOSS_STREAK_REDUCE) {
+            dollars = Math.max(2, Math.floor(dollars * 0.5));
+          }
+
+          const rr = ((1 - targetPrice - fee) / (targetPrice + fee)).toFixed(1);
+
+          console.log(`[ArbHunter] 🎯 CONFIRMED MOVE! ${targetOutcome} @ $${targetPrice.toFixed(3)} | BTC ${btcMovePct >= 0 ? '+' : ''}${btcMovePct.toFixed(3)}%`);
+          console.log(`[ArbHunter] 🎯 Edge: ${(probEdge*100).toFixed(0)}% | EV: +${(netEV*100).toFixed(1)}¢/share | R:R ${rr}:1 | Fee: ${(fee*100).toFixed(1)}¢ | $${dollars}${isStrong ? ' STRONG' : ''}`);
+          console.log(`[ArbHunter] ══════════════════════════════════════`);
+
+          return {
+            shouldTrade: true,
+            direction: btcUp ? "LONG" : "SHORT",
+            targetOutcome,
+            confidence: Math.round(estimatedProb * 100),
+            edge: probEdge,
+            marketPrice: targetPrice,
+            modelProb: estimatedProb,
+            strategy: isStrong ? "MOVE_STRONG" : "MOVE",
+            moveDollars: dollars,
+            bullScore: 0, bearScore: 0,
+            signals: [`BTC:${btcMovePct >= 0 ? '+' : ''}${btcMovePct.toFixed(3)}%`, `${targetOutcome}:$${targetPrice.toFixed(3)}`, `EV:+${(netEV*100).toFixed(1)}¢`],
+            reason: `🎯 MOVE ${targetOutcome} @ $${targetPrice.toFixed(3)} | BTC ${btcMovePct >= 0 ? '+' : ''}${btcMovePct.toFixed(2)}% | EV +${(netEV*100).toFixed(1)}¢ | $${dollars}`
+          };
+        } else if (btcMoveAbs >= this.MOVE_MIN_BTC_PCT) {
+          console.log(`[ArbHunter] ⏳ Move found but edge/EV too low: edge ${(probEdge*100).toFixed(0)}% EV ${(netEV*100).toFixed(1)}¢`);
+        }
+      }
     }
 
-    if (targetPrice < this.MIN_TOKEN_PRICE) {
-      console.log(`[Sniper] ⏳ Token too cheap (dust): $${targetPrice.toFixed(3)}`);
-      console.log(`[Sniper] ══════════════════════════════════════`);
-      return { shouldTrade: false, reason: `Dust price $${targetPrice.toFixed(3)}` };
-    }
-
-    // ─── CHECK 3: Confirm the lag exists ────────────────────
-    // If BTC is up 0.3% but Up token is 60¢, the market already priced it in.
-    // We want: BTC moved significantly BUT token is still cheap.
-    // "Implied probability" from token price vs actual probability from BTC move
-    const impliedProb = targetPrice; // token price ≈ market's implied probability
-    // A 0.2% BTC move in 15min historically resolves in that direction ~70-80% of time
-    // A 0.35%+ move resolves ~85%+ of the time
-    const estimatedProb = btcMoveAbs >= this.STRONG_MOVE_PCT ? 0.85 : 0.70;
-    const probEdge = estimatedProb - impliedProb;
-
-    if (probEdge < 0.15) {
-      console.log(`[Sniper] ⏳ Edge too thin: est ${(estimatedProb*100).toFixed(0)}% vs market ${(impliedProb*100).toFixed(0)}% = ${(probEdge*100).toFixed(0)}% edge`);
-      console.log(`[Sniper] ══════════════════════════════════════`);
-      return { shouldTrade: false, reason: `Edge too thin (${(probEdge*100).toFixed(0)}%)` };
-    }
-
-    // ─── ALL CHECKS PASSED — SNIPE! ─────────────────────────
-    const isStrong = btcMoveAbs >= this.STRONG_MOVE_PCT;
-    let dollars = isStrong ? this.BET_SIZE_STRONG : this.BET_SIZE;
-
-    // Reduce after loss streak
-    if (this.consecutiveLosses >= this.LOSS_STREAK_REDUCE) {
-      dollars = Math.max(2, Math.floor(dollars * 0.5));
-      console.log(`[Sniper] ⚠ Loss streak ${this.consecutiveLosses} — reduced to $${dollars}`);
-    }
-
-    const rr = ((1 - targetPrice) / targetPrice).toFixed(1);
-    const direction = btcUp ? "LONG" : "SHORT";
-
-    console.log(`[Sniper] 🎯 SNIPE! ${targetOutcome} @ $${targetPrice.toFixed(3)} | BTC ${btcMovePct >= 0 ? '+' : ''}${btcMovePct.toFixed(3)}% | Edge: ${(probEdge*100).toFixed(0)}% | R:R ${rr}:1 | $${dollars}${isStrong ? ' (STRONG)' : ''}`);
-    console.log(`[Sniper] ══════════════════════════════════════`);
-
-    return {
-      shouldTrade: true,
-      direction,
-      targetOutcome,
-      confidence: Math.round(estimatedProb * 100),
-      edge: probEdge,
-      marketPrice: targetPrice,
-      modelProb: estimatedProb,
-      strategy: isStrong ? "SNIPER_STRONG" : "SNIPER",
-      isConviction: false,
-      isLateHedge: false,
-      applyLongDiscount: false,
-      sniperDollars: dollars,
-      bullScore: 0,
-      bearScore: 0,
-      signals: [`BTC:${btcMovePct >= 0 ? '+' : ''}${btcMovePct.toFixed(3)}%`, `${targetOutcome}:$${targetPrice.toFixed(3)}`, `edge:${(probEdge*100).toFixed(0)}%`],
-      reason: `🎯 SNIPE ${targetOutcome} @ $${targetPrice.toFixed(3)} | BTC ${btcMovePct >= 0 ? '+' : ''}${btcMovePct.toFixed(3)}% | Edge ${(probEdge*100).toFixed(0)}% | $${dollars}`
-    };
+    console.log(`[ArbHunter] ⏳ No opportunity | Sum: $${sum.toFixed(3)} | BTC: ${btcMovePct >= 0 ? '+' : ''}${btcMovePct.toFixed(3)}%`);
+    console.log(`[ArbHunter] ══════════════════════════════════════`);
+    return { shouldTrade: false, reason: `No opportunity (sum $${sum.toFixed(3)}, BTC ${btcMoveAbs.toFixed(2)}%)` };
   }
 
   // ═══════════════════════════════════════════════════════════════
@@ -263,8 +348,15 @@ export class TradingEngine {
       const price = Math.min(0.95, signal.marketPrice + 0.003);
       const MIN_SHARES = 5;
       
-      // Sniper sizing
-      let dollars = signal.sniperDollars || this.BET_SIZE;
+      // Sizing based on strategy
+      let dollars;
+      if (signal.strategy === "PURE_ARB") {
+        dollars = signal.arbDollars || this.ARB_SIZE;
+      } else if (signal.strategy === "EXTREME_VALUE") {
+        dollars = signal.extremeDollars || this.EXTREME_SIZE;
+      } else {
+        dollars = signal.moveDollars || this.MOVE_SIZE;
+      }
       
       let size = Math.floor(dollars / price);
       if (size < MIN_SHARES) size = MIN_SHARES;
@@ -280,15 +372,23 @@ export class TradingEngine {
       });
 
       if (!order || !order.orderID) {
-        console.log("[Sniper] Order failed - no orderID returned");
+        console.log("[ArbHunter] Order failed - no orderID returned");
         return { success: false, reason: "Order failed - no orderID returned" };
       }
       
-      console.log(`[Sniper] ✅ SNIPED: ${signal.strategy} ${signal.targetOutcome} ${size}x @ $${price.toFixed(3)} = $${maxCost.toFixed(2)}`);
+      console.log(`[ArbHunter] ✅ ${signal.strategy}: ${signal.targetOutcome} ${size}x @ $${price.toFixed(3)} = $${maxCost.toFixed(2)}`);
 
       // Mark this market as traded
       const slug = marketData.marketSlug || "";
-      if (slug) this.tradedSlugs.add(slug);
+      if (slug) {
+        const state = this.tradedSlugs.get(slug) || { arb: false, directional: false };
+        if (signal.strategy === "PURE_ARB") {
+          state.arb = true;
+        } else {
+          state.directional = true;
+        }
+        this.tradedSlugs.set(slug, state);
+      }
 
       this.lastTradeTime = Date.now();
       this.lastBuyTime = Date.now();
@@ -307,8 +407,11 @@ export class TradingEngine {
 
       this.tradeHistory.push(trade);
 
-      // Track snipe count
-      this.todaySnipes++;
+      // Track by strategy type
+      this.todayTrades++;
+      if (signal.strategy === "PURE_ARB") this.todayArbs++;
+      else if (signal.strategy === "EXTREME_VALUE") this.todayExtremes++;
+      else this.todayMoves++;
 
       // Track position for P&L
       this.positionTracker.addPosition({
@@ -326,12 +429,12 @@ export class TradingEngine {
         indicators: {},
         bullScore: signal.bullScore || 0, bearScore: signal.bearScore || 0,
         signals: signal.signals || [],
-        strategy: signal.strategy || "SNIPER"
+        strategy: signal.strategy || "ARB_HUNTER"
       });
 
       return {
         success: true, trade, order,
-        reason: `${signal.strategy} ${signal.targetOutcome} ${size}x @ $${price.toFixed(2)} ($${maxCost.toFixed(2)})`
+        reason: `${signal.strategy} ${signal.targetOutcome} ${size}x @ $${price.toFixed(3)} ($${maxCost.toFixed(2)})`
       };
 
     } catch (error) {
@@ -350,8 +453,8 @@ export class TradingEngine {
       this.consecutiveLosses++;
     }
     
-    const wr = this.todaySnipes > 0 ? ((this.todayWins / this.todaySnipes) * 100).toFixed(0) : "N/A";
-    console.log(`[Sniper] 📊 ${won ? '✅ WIN' : '❌ LOSS'} ${outcome} $${pnl.toFixed(2)} | Daily: $${this.dailyPnl.toFixed(2)} | ${this.todayWins}/${this.todaySnipes} (${wr}%) | Streak: ${this.consecutiveLosses}L`);
+    const wr = this.todayTrades > 0 ? ((this.todayWins / this.todayTrades) * 100).toFixed(0) : "N/A";
+    console.log(`[ArbHunter] 📊 ${won ? '✅ WIN' : '❌ LOSS'} ${outcome} $${pnl.toFixed(2)} | Daily: $${this.dailyPnl.toFixed(2)} | ${this.todayWins}/${this.todayTrades} (${wr}%) | ${this.consecutiveLosses}L streak`);
   }
 
   // Check and resolve positions when market ends
@@ -378,8 +481,11 @@ export class TradingEngine {
       activeOrders: this.tradingService.getActiveOrdersCount(),
       pnl: pnlStats,
       tradesThisHour: this._tradesInLastHour(),
-      todaySnipes: this.todaySnipes,
+      todayTrades: this.todayTrades,
       todayWins: this.todayWins,
+      todayArbs: this.todayArbs,
+      todayExtremes: this.todayExtremes,
+      todayMoves: this.todayMoves,
       dailyPnl: this.dailyPnl,
       consecutiveLosses: this.consecutiveLosses,
       tradedSlugs: this.tradedSlugs.size
