@@ -86,6 +86,13 @@ export class TradingEngine {
     this.todayArbs = 0;
     this.todayExtremes = 0;
     this.todayMoves = 0;
+    
+    // ═══ LOGGING & ANALYTICS ═══════════════════════════
+    this.opportunitiesSeen = 0;      // Total opportunities scanned
+    this.arbSkipped = 0;             // Arb found but fees ate profit
+    this.extremeSkipped = 0;         // Extreme value but move too small
+    this.moveSkipped = 0;            // Move found but edge/EV too low
+    this.lastLogTime = Date.now();
   }
 
   _tradesInLastHour() {
@@ -187,9 +194,7 @@ export class TradingEngine {
     const feeUp = this._takerFee(upPrice);
     const feeDown = this._takerFee(downPrice);
 
-    console.log(`[ArbHunter] ══════════════════════════════════════`);
-    console.log(`[ArbHunter] Up: $${upPrice.toFixed(3)} | Down: $${downPrice.toFixed(3)} | Sum: $${sum.toFixed(3)} | Min ${candleMinute}/15`);
-    console.log(`[ArbHunter] BTC: ${btcMovePct >= 0 ? '+' : ''}${btcMovePct.toFixed(3)}% | Fees: Up ${(feeUp*100).toFixed(2)}¢ Down ${(feeDown*100).toFixed(2)}¢ | Daily: $${this.dailyPnl.toFixed(2)}`);
+    this.opportunitiesSeen++;
 
     // ═══════════════════════════════════════════════════════════
     // STRATEGY 1: PURE ARB — Up + Down < threshold
@@ -201,6 +206,8 @@ export class TradingEngine {
       const netProfit = grossProfit - totalFee;
 
       if (netProfit >= this.ARB_MIN_PROFIT) {
+        console.log(`[ArbHunter] ══════════════════════════════════════`);
+        console.log(`[ArbHunter] Up: $${upPrice.toFixed(3)} | Down: $${downPrice.toFixed(3)} | Sum: $${sum.toFixed(3)} | Min ${candleMinute}/15`);
         // Buy the cheaper side (more shares per dollar = more profit)
         const cheaperSide = upPrice <= downPrice ? "Up" : "Down";
         const cheaperPrice = Math.min(upPrice, downPrice);
@@ -227,7 +234,11 @@ export class TradingEngine {
           reason: `💰 ARB: Sum $${sum.toFixed(3)} | Net +${(netProfit*100).toFixed(1)}¢/share | ${cheaperSide} @ $${cheaperPrice.toFixed(3)}`
         };
       } else {
-        console.log(`[ArbHunter] ⏳ Arb exists but fees eat it: net ${(netProfit*100).toFixed(1)}¢ < ${(this.ARB_MIN_PROFIT*100).toFixed(1)}¢`);
+        this.arbSkipped++;
+        // Only log arb skips occasionally to avoid spam
+        if (this.arbSkipped % 50 === 0) {
+          console.log(`[ArbHunter] ⏳ Arb skip #${this.arbSkipped}: Sum $${sum.toFixed(3)} | Net ${(netProfit*100).toFixed(1)}¢ (fees ate ${(totalFee*100).toFixed(1)}¢)`);
+        }
       }
     }
 
@@ -248,6 +259,8 @@ export class TradingEngine {
         const breakeven = (netLoss / (netWin + netLoss) * 100).toFixed(0);
         const dollars = this.EXTREME_SIZE;
 
+        console.log(`[ArbHunter] ══════════════════════════════════════`);
+        console.log(`[ArbHunter] Up: $${upPrice.toFixed(3)} | Down: $${downPrice.toFixed(3)} | Sum: $${sum.toFixed(3)} | Min ${candleMinute}/15`);
         console.log(`[ArbHunter] 🎰 EXTREME VALUE! ${extremeToken} @ $${extremePrice.toFixed(3)} | BTC ${btcMovePct >= 0 ? '+' : ''}${btcMovePct.toFixed(3)}%`);
         console.log(`[ArbHunter] 🎰 R:R ${rr}:1 | Win: +${(netWin*100).toFixed(0)}¢ | Lose: -${(netLoss*100).toFixed(0)}¢ | Breakeven: ${breakeven}% WR | $${dollars}`);
         console.log(`[ArbHunter] ══════════════════════════════════════`);
@@ -299,6 +312,8 @@ export class TradingEngine {
 
           const rr = ((1 - targetPrice - fee) / (targetPrice + fee)).toFixed(1);
 
+          console.log(`[ArbHunter] ══════════════════════════════════════`);
+          console.log(`[ArbHunter] Up: $${upPrice.toFixed(3)} | Down: $${downPrice.toFixed(3)} | Sum: $${sum.toFixed(3)} | Min ${candleMinute}/15`);
           console.log(`[ArbHunter] 🎯 CONFIRMED MOVE! ${targetOutcome} @ $${targetPrice.toFixed(3)} | BTC ${btcMovePct >= 0 ? '+' : ''}${btcMovePct.toFixed(3)}%`);
           console.log(`[ArbHunter] 🎯 Edge: ${(probEdge*100).toFixed(0)}% | EV: +${(netEV*100).toFixed(1)}¢/share | R:R ${rr}:1 | Fee: ${(fee*100).toFixed(1)}¢ | $${dollars}${isStrong ? ' STRONG' : ''}`);
           console.log(`[ArbHunter] ══════════════════════════════════════`);
@@ -318,13 +333,28 @@ export class TradingEngine {
             reason: `🎯 MOVE ${targetOutcome} @ $${targetPrice.toFixed(3)} | BTC ${btcMovePct >= 0 ? '+' : ''}${btcMovePct.toFixed(2)}% | EV +${(netEV*100).toFixed(1)}¢ | $${dollars}`
           };
         } else if (btcMoveAbs >= this.MOVE_MIN_BTC_PCT) {
-          console.log(`[ArbHunter] ⏳ Move found but edge/EV too low: edge ${(probEdge*100).toFixed(0)}% EV ${(netEV*100).toFixed(1)}¢`);
+          this.moveSkipped++;
+          // Only log move skips occasionally to avoid spam
+          if (this.moveSkipped % 30 === 0) {
+            console.log(`[ArbHunter] ⏳ Move skip #${this.moveSkipped}: BTC ${btcMovePct >= 0 ? '+' : ''}${btcMovePct.toFixed(3)}% | Edge ${(probEdge*100).toFixed(0)}% | EV ${(netEV*100).toFixed(1)}¢`);
+          }
         }
       }
     }
 
-    console.log(`[ArbHunter] ⏳ No opportunity | Sum: $${sum.toFixed(3)} | BTC: ${btcMovePct >= 0 ? '+' : ''}${btcMovePct.toFixed(3)}%`);
-    console.log(`[ArbHunter] ══════════════════════════════════════`);
+    // Periodic summary every 10 trades
+    if (this.todayTrades > 0 && this.todayTrades % 10 === 0 && (Date.now() - this.lastLogTime) > 5000) {
+      const wr = this.todayTrades > 0 ? ((this.todayWins / this.todayTrades) * 100).toFixed(0) : "N/A";
+      const avgPerTrade = this.todayTrades > 0 ? (this.dailyPnl / this.todayTrades).toFixed(2) : "0.00";
+      console.log(`\n[ArbHunter] ════════════════════════════════════════════════════════`);
+      console.log(`[ArbHunter] 📊 SUMMARY after ${this.todayTrades} trades | Daily P&L: $${this.dailyPnl.toFixed(2)} | Avg: $${avgPerTrade}/trade | WR: ${wr}%`);
+      console.log(`[ArbHunter] 💰 Arb: ${this.todayArbs} trades | 🎰 Extreme: ${this.todayExtremes} trades | 🎯 Move: ${this.todayMoves} trades`);
+      console.log(`[ArbHunter] ⏳ Skipped: Arb ${this.arbSkipped} | Extreme ${this.extremeSkipped} | Move ${this.moveSkipped} | Scanned: ${this.opportunitiesSeen}`);
+      console.log(`[ArbHunter] 📈 Opportunities/trade: ${(this.opportunitiesSeen / Math.max(1, this.todayTrades)).toFixed(1)} | Loss streak: ${this.consecutiveLosses}`);
+      console.log(`[ArbHunter] ════════════════════════════════════════════════════════\n`);
+      this.lastLogTime = Date.now();
+    }
+
     return { shouldTrade: false, reason: `No opportunity (sum $${sum.toFixed(3)}, BTC ${btcMoveAbs.toFixed(2)}%)` };
   }
 
