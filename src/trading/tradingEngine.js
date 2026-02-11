@@ -37,8 +37,8 @@ export class TradingEngine {
     this.MAX_PAIR_ASK = 0.985;       // Only enter if Up+Down ≤ 98.5¢ (edge exists)
     
     // Sizing
-    this.BUY_SIZE_DOLLARS = 2;       // $2 per buy
-    this.MAX_WINDOW_SPEND = 6;       // Max $6 per window (enough for 2-3 buys)
+    this.BUY_SIZE_DOLLARS = 3;       // $3 per buy
+    this.MAX_WINDOW_SPEND = 8;       // Max $8 per window (enough for 2-3 buys)
     this.LONG_DISCOUNT = 0.7;        // Reduce LONG size to 70% after consecutive Down wins
     
     // Timing & cooldowns
