@@ -275,7 +275,11 @@ export class TradingEngine {
       const extremePrice = btcUp ? upPrice : downPrice;
 
       // Deep value: tokens under 5¢ don't need BTC confirmation (R:R is 20:1+)
-      const isDeepValue = extremePrice <= this.DEEP_VALUE_MAX && extremePrice > 0.01;
+      // BUT: only trade if arb is impossible (sum > 0.98) or window closing (min > 10)
+      // This prevents deep value from blocking arb opportunities
+      const arbImpossible = sum > 0.98;
+      const arbWindowClosing = candleMinute > 10;
+      const isDeepValue = extremePrice <= this.DEEP_VALUE_MAX && extremePrice > 0.01 && (arbImpossible || arbWindowClosing);
       const isExtremeWithMove = extremePrice <= this.EXTREME_MAX_PRICE && extremePrice > 0.01 && btcMoveAbs >= this.EXTREME_MIN_BTC_MOVE;
       if (isDeepValue || isExtremeWithMove) {
         const fee = this._takerFee(extremePrice);
