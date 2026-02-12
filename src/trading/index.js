@@ -118,9 +118,9 @@ export async function evaluateAndTrade(prediction, marketData, currentPrice, ind
   };
 }
 
-export function checkResolutions(currentPrice, priceToBeat) {
+export function checkResolutions(currentPrice, priceToBeat, assetName = null) {
   if (!tradingEngine) return [];
-  return tradingEngine.checkResolutions(currentPrice, priceToBeat);
+  return tradingEngine.checkResolutions(currentPrice, priceToBeat, assetName);
 }
 
 export function checkStopLoss(currentMarketPrices) {

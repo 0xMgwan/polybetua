@@ -772,9 +772,6 @@ async function main() {
       let tradeResult = null;
       const multiAssetResults = []; // Track results from all assets
       if (tradingStatus?.enabled) {
-        // Check if any positions should be resolved (uses BTC price)
-        const ptb = priceToBeatState.slug === marketSlug ? priceToBeatState.value : null;
-        checkResolutions(currentPrice, ptb);
         cleanupStalePositions();
         
         // Check for stop-loss triggers (20% loss) using BTC market prices
@@ -820,6 +817,18 @@ async function main() {
           const assetWsStream = assetStreams.get(snap.asset);
           const assetWsTick = assetWsStream?.getLast();
           const assetSpotPrice = assetWsTick?.price ?? null;
+
+          // ═══ PER-ASSET RESOLUTION ═══
+          // Resolve positions using THIS asset's spot price, NOT BTC's
+          // This is critical: XRP positions must resolve against XRP price, etc.
+          {
+            const existingPtb = assetPriceToBeat.get(snap.asset);
+            const resolvePrice = assetSpotPrice;
+            const resolvePtb = existingPtb?.slug === assetSlug ? existingPtb?.value : null;
+            if (resolvePrice !== null) {
+              checkResolutions(resolvePrice, resolvePtb, snap.asset);
+            }
+          }
 
           // Per-asset price-to-beat tracking
           let aptb = assetPriceToBeat.get(snap.asset) || { slug: null, value: null, setAtMs: null };

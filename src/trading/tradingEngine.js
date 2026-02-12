@@ -512,7 +512,8 @@ export class TradingEngine {
         marketSlug: marketData.marketSlug, marketEndTime: marketData.marketEndTime || null,
         priceToBeat, upPrice, downPrice,
         indicators: {}, bullScore: 0, bearScore: 0,
-        signals: signal.signals || [], strategy: "PURE_ARB_UP"
+        signals: signal.signals || [], strategy: "PURE_ARB_UP",
+        assetName: marketData.assetName || "BTC"
       });
     }
     if (downOk) {
@@ -529,7 +530,8 @@ export class TradingEngine {
         marketSlug: marketData.marketSlug, marketEndTime: marketData.marketEndTime || null,
         priceToBeat, upPrice, downPrice,
         indicators: {}, bullScore: 0, bearScore: 0,
-        signals: signal.signals || [], strategy: "PURE_ARB_DOWN"
+        signals: signal.signals || [], strategy: "PURE_ARB_DOWN",
+        assetName: marketData.assetName || "BTC"
       });
     }
 
@@ -623,7 +625,8 @@ export class TradingEngine {
       indicators: {},
       bullScore: signal.bullScore || 0, bearScore: signal.bearScore || 0,
       signals: signal.signals || [],
-      strategy: signal.strategy || "ARB_HUNTER"
+      strategy: signal.strategy || "ARB_HUNTER",
+      assetName: marketData.assetName || "BTC"
     });
 
     return {
@@ -648,8 +651,9 @@ export class TradingEngine {
   }
 
   // Check and resolve positions when market ends
-  checkResolutions(currentPrice, priceToBeat) {
-    return this.positionTracker.checkResolutions(currentPrice, priceToBeat);
+  // assetName ensures we only resolve positions for the given asset
+  checkResolutions(currentPrice, priceToBeat, assetName = null) {
+    return this.positionTracker.checkResolutions(currentPrice, priceToBeat, assetName);
   }
 
   // Check if any positions should be stopped out (20% loss)

@@ -31,7 +31,7 @@ export class PositionTracker {
   }
 
   // Record a new position when an order is placed
-  addPosition({ orderId, direction, outcome, price, size, confidence, edge, marketSlug, marketEndTime, priceToBeat, upPrice, downPrice, indicators, bullScore, bearScore, signals, strategy }) {
+  addPosition({ orderId, direction, outcome, price, size, confidence, edge, marketSlug, marketEndTime, priceToBeat, upPrice, downPrice, indicators, bullScore, bearScore, signals, strategy, assetName }) {
     const position = {
       orderId,
       direction,       // "LONG" or "SHORT"
@@ -51,6 +51,7 @@ export class PositionTracker {
       bearScore: bearScore || 0,
       signals: signals || [],
       strategy: strategy || "UNKNOWN",
+      assetName: assetName || "BTC",  // Track which asset this position is for
       openedAt: Date.now(),
       status: "OPEN",  // OPEN -> RESOLVED_WIN / RESOLVED_LOSS
       pnl: null,
@@ -67,13 +68,21 @@ export class PositionTracker {
   }
 
   // Check if any open positions should be resolved based on market end time
-  checkResolutions(currentPrice, priceToBeat) {
+  // assetName filter ensures we only resolve positions for the given asset
+  // using that asset's own spot price (not BTC price for XRP positions, etc.)
+  checkResolutions(currentPrice, priceToBeat, assetName = null) {
     const now = Date.now();
     const resolved = [];
 
     for (let i = this.openPositions.length - 1; i >= 0; i--) {
       const pos = this.openPositions[i];
       
+      // Only resolve positions matching the specified asset (if provided)
+      // This prevents resolving XRP positions with BTC's price, etc.
+      if (assetName && pos.assetName && pos.assetName !== assetName) {
+        continue;
+      }
+
       // Check if market has ended (15m candle closed)
       if (pos.marketEndTime && now >= pos.marketEndTime) {
         // Determine outcome
@@ -83,11 +92,11 @@ export class PositionTracker {
         const ptb = pos.priceToBeat !== null && pos.priceToBeat !== undefined ? pos.priceToBeat : priceToBeat;
         
         if (ptb !== null && currentPrice !== null) {
-          const btcWentUp = currentPrice > ptb;
-          const btcWentDown = currentPrice <= ptb;
+          const priceWentUp = currentPrice > ptb;
+          const priceWentDown = currentPrice <= ptb;
           
-          if (pos.outcome === "Up" && btcWentUp) won = true;
-          if (pos.outcome === "Down" && btcWentDown) won = true;
+          if (pos.outcome === "Up" && priceWentUp) won = true;
+          if (pos.outcome === "Down" && priceWentDown) won = true;
         } else {
           // Can't determine - mark as unknown, assume loss for safety
           won = false;
@@ -119,7 +128,8 @@ export class PositionTracker {
         resolved.push(pos);
 
         const emoji = won ? "✅" : "❌";
-        console.log(`[Tracker] ${emoji} Position resolved: ${pos.direction} ${pos.outcome} | P&L: $${pos.pnl.toFixed(2)} | Total P&L: $${this.totalPnl.toFixed(2)}`);
+        const assetTag = pos.assetName ? `[${pos.assetName}]` : "";
+        console.log(`[Tracker] ${emoji} ${assetTag} Position resolved: ${pos.direction} ${pos.outcome} | P&L: $${pos.pnl.toFixed(2)} | Total P&L: $${this.totalPnl.toFixed(2)}`);
         
         // Track outcomes for streak analysis
         this.recentOutcomes.push(won ? "W" : "L");
@@ -444,8 +454,10 @@ export class PositionTracker {
       if (fs.existsSync(JOURNAL_FILE)) {
         try { journal = JSON.parse(fs.readFileSync(JOURNAL_FILE, "utf8")); } catch (e) { journal = []; }
       }
+      const assetName = pos.assetName || "BTC";
       journal.push({
         timestamp: new Date().toISOString(),
+        asset: assetName,
         market: pos.marketSlug || "",
         direction: pos.direction,
         outcome: pos.outcome,
@@ -456,8 +468,8 @@ export class PositionTracker {
         combinedPrice: combinedPrice || null,
         cost: pos.cost,
         pnl: pos.pnl,
-        btcStart: pos.priceToBeat,
-        btcEnd: resolvedPrice,
+        priceStart: pos.priceToBeat,
+        priceEnd: resolvedPrice,
         movePct: movePct || null,
         overreaction: wasOverreaction || false,
         bullScore: pos.bullScore || 0,
@@ -473,7 +485,7 @@ export class PositionTracker {
     try {
       fs.mkdirSync(LOG_DIR, { recursive: true });
       if (!fs.existsSync(CSV_FILE)) {
-        const header = "timestamp,market,direction,outcome,won,strategy,entryPrice,oppositePrice,combinedPrice,cost,pnl,btcStart,btcEnd,movePct,overreaction,bullScore,bearScore,signals,streak\n";
+        const header = "timestamp,asset,market,direction,outcome,won,strategy,entryPrice,oppositePrice,combinedPrice,cost,pnl,priceStart,priceEnd,movePct,overreaction,bullScore,bearScore,signals,streak\n";
         fs.writeFileSync(CSV_FILE, header, "utf8");
       }
     } catch (e) { /* ignore */ }
@@ -481,8 +493,10 @@ export class PositionTracker {
 
   _appendCsv(pos, resolvedPrice, won, movePct, wasOverreaction, oppositePrice, combinedPrice) {
     try {
+      const assetName = pos.assetName || "BTC";
       const row = [
         new Date().toISOString(),
+        assetName,
         pos.marketSlug || "",
         pos.direction,
         pos.outcome,
