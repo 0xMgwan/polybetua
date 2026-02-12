@@ -269,10 +269,10 @@ export class TradingEngine {
     }
 
     // ═══════════════════════════════════════════════════════════
-    // STRATEGY 2: EXTREME VALUE — Token < 10¢ + confirmed direction
+    // STRATEGY 2: EXTREME VALUE — DISABLED (arb-only mode)
     // Risk 10¢, win 90¢. 9:1 R:R. Only need 15% win rate to profit.
     // ═══════════════════════════════════════════════════════════
-    if (!slugState.directional && spotPrice && priceToBeat) {
+    if (false && !slugState.directional && spotPrice && priceToBeat) {
       const btcUp = btcMovePct > 0;
       const extremeToken = btcUp ? "Up" : "Down";
       const extremePrice = btcUp ? upPrice : downPrice;
@@ -316,10 +316,10 @@ export class TradingEngine {
     }
 
     // ═══════════════════════════════════════════════════════════
-    // STRATEGY 3: CONFIRMED MOVE — BTC moved >0.25% + cheap token
+    // STRATEGY 3: CONFIRMED MOVE — DISABLED (arb-only mode)
     // Same as sniper but tighter criteria to account for fees
     // ═══════════════════════════════════════════════════════════
-    if (!slugState.directional && spotPrice && priceToBeat && candleMinute >= 2) {
+    if (false && !slugState.directional && spotPrice && priceToBeat && candleMinute >= 2) {
       const btcUp = btcMovePct > 0;
       const targetOutcome = btcUp ? "Up" : "Down";
       const targetPrice = btcUp ? upPrice : downPrice;
