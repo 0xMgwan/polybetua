@@ -992,6 +992,23 @@ const server = createServer((req, res) => {
         res.end(JSON.stringify({ error: 'No CSV file found' }));
       }
     }
+    else if (urlPath === '/debug') {
+      // Real-time debug: what is the bot seeing right now?
+      const stats = getTradingStats();
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        lastScan: stats?.lastScan || 'No scans yet',
+        opportunitiesSeen: stats?.opportunitiesSeen || 0,
+        arbSkipped: stats?.arbSkipped || 0,
+        moveSkipped: stats?.moveSkipped || 0,
+        todayTrades: stats?.todayTrades || 0,
+        enabled: stats?.enabled,
+        tradedSlugs: stats?.tradedSlugs || 0,
+        consecutiveLosses: stats?.consecutiveLosses || 0,
+        dailyPnl: stats?.dailyPnl || 0,
+        timestamp: new Date().toISOString()
+      }, null, 2));
+    }
     else if (urlPath === '/' || urlPath === '/health') {
       // Simple health check with links
       const html = `
@@ -1005,6 +1022,7 @@ const server = createServer((req, res) => {
   <li><a href="/history">📜 Trade History</a></li>
   <li><a href="/pnl">💰 P&L State</a></li>
   <li><a href="/csv">📥 Download CSV</a></li>
+  <li><a href="/debug">🔍 Debug (live scan)</a></li>
 </ul>
 <p>Last updated: ${new Date().toISOString()}</p>
 </body>

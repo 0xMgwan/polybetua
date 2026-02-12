@@ -93,6 +93,8 @@ export class TradingEngine {
     this.extremeSkipped = 0;         // Extreme value but move too small
     this.moveSkipped = 0;            // Move found but edge/EV too low
     this.lastLogTime = Date.now();
+    this.lastScanLog = 0;            // Last time we logged a scan
+    this.lastScan = {};              // Last scan data for /debug endpoint
   }
 
   _tradesInLastHour() {
@@ -195,6 +197,26 @@ export class TradingEngine {
     const feeDown = this._takerFee(downPrice);
 
     this.opportunitiesSeen++;
+
+    // Store last scan for debug endpoint
+    this.lastScan = {
+      time: new Date().toISOString(),
+      upPrice, downPrice, sum: sum.toFixed(4),
+      spotPrice, priceToBeat,
+      btcMovePct: btcMovePct.toFixed(4),
+      candleMinute,
+      slug,
+      arbThreshold: this.ARB_MAX_SUM,
+      arbWouldTrigger: sum < this.ARB_MAX_SUM,
+      alreadyArbTraded: slugState.arb,
+      feeUp: feeUp.toFixed(4), feeDown: feeDown.toFixed(4)
+    };
+
+    // Log scan every 60 seconds so we can see what's happening
+    if ((now - this.lastScanLog) > 60000) {
+      console.log(`[ArbHunter] 🔍 Scan: Up $${upPrice.toFixed(3)} + Down $${downPrice.toFixed(3)} = $${sum.toFixed(3)} | Threshold: $${this.ARB_MAX_SUM} | BTC: ${btcMovePct >= 0 ? '+' : ''}${btcMovePct.toFixed(3)}% | Min ${candleMinute}/15`);
+      this.lastScanLog = now;
+    }
 
     // ═══════════════════════════════════════════════════════════
     // STRATEGY 1: PURE ARB — Up + Down < threshold
@@ -645,7 +667,11 @@ export class TradingEngine {
       todayMoves: this.todayMoves,
       dailyPnl: this.dailyPnl,
       consecutiveLosses: this.consecutiveLosses,
-      tradedSlugs: this.tradedSlugs.size
+      tradedSlugs: this.tradedSlugs.size,
+      lastScan: this.lastScan,
+      opportunitiesSeen: this.opportunitiesSeen,
+      arbSkipped: this.arbSkipped,
+      moveSkipped: this.moveSkipped
     };
   }
 
