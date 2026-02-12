@@ -429,18 +429,21 @@ export class TradingEngine {
     const dollars = signal.arbDollars || this.ARB_SIZE;
     const MIN_SHARES = 5;
 
-    // Calculate shares — buy EQUAL qty of both sides
-    // Use the more expensive side to determine qty (so we can afford both)
-    const maxPrice = Math.max(upPrice, downPrice);
-    const halfDollars = dollars / 2;
-    let size = Math.floor(halfDollars / maxPrice);
-    if (size < MIN_SHARES) size = MIN_SHARES;
-
+    // Calculate shares — buy equal DOLLARS of each side (not equal qty)
+    // This ensures symmetric risk: losing either side costs the same amount
     const upBuyPrice = Math.min(0.95, upPrice + 0.003);
     const downBuyPrice = Math.min(0.95, downPrice + 0.003);
-    const totalCost = (upBuyPrice * size) + (downBuyPrice * size);
+    const halfDollars = dollars / 2;
+    
+    let upSize = Math.floor(halfDollars / upBuyPrice);
+    let downSize = Math.floor(halfDollars / downBuyPrice);
+    
+    if (upSize < MIN_SHARES) upSize = MIN_SHARES;
+    if (downSize < MIN_SHARES) downSize = MIN_SHARES;
 
-    console.log(`[ArbHunter] 💰 ARB: Buying BOTH sides — Up ${size}x @ $${upBuyPrice.toFixed(3)} + Down ${size}x @ $${downBuyPrice.toFixed(3)} = $${totalCost.toFixed(2)}`);
+    const totalCost = (upBuyPrice * upSize) + (downBuyPrice * downSize);
+
+    console.log(`[ArbHunter] 💰 ARB: Buying BOTH sides — Up ${upSize}x @ $${upBuyPrice.toFixed(3)} + Down ${downSize}x @ $${downBuyPrice.toFixed(3)} = $${totalCost.toFixed(2)}`);
 
     // Place BOTH orders simultaneously
     const [upOrder, downOrder] = await Promise.allSettled([
@@ -448,14 +451,14 @@ export class TradingEngine {
         tokenId: upTokenId,
         side: "BUY",
         price: upBuyPrice,
-        size,
+        size: upSize,
         orderType: "GTC"
       }),
       this.tradingService.placeOrder({
         tokenId: downTokenId,
         side: "BUY",
         price: downBuyPrice,
-        size,
+        size: downSize,
         orderType: "GTC"
       })
     ]);
@@ -499,16 +502,16 @@ export class TradingEngine {
 
     // Record positions for both legs
     if (upOk) {
-      const upCost = upBuyPrice * size;
+      const upCost = upBuyPrice * upSize;
       this.tradeHistory.push({
         timestamp: Date.now(), direction: "LONG", outcome: "Up",
         confidence: 95, edge: signal.edge,
-        price: upBuyPrice, size, cost: upCost,
+        price: upBuyPrice, size: upSize, cost: upCost,
         orderId: upOrder.value.orderID, marketSlug: marketData.marketSlug
       });
       this.positionTracker.addPosition({
         orderId: upOrder.value.orderID, direction: "LONG", outcome: "Up",
-        price: upBuyPrice, size, confidence: 95, edge: signal.edge,
+        price: upBuyPrice, size: upSize, confidence: 95, edge: signal.edge,
         marketSlug: marketData.marketSlug, marketEndTime: marketData.marketEndTime || null,
         priceToBeat, upPrice, downPrice,
         indicators: {}, bullScore: 0, bearScore: 0,
@@ -517,16 +520,16 @@ export class TradingEngine {
       });
     }
     if (downOk) {
-      const downCost = downBuyPrice * size;
+      const downCost = downBuyPrice * downSize;
       this.tradeHistory.push({
         timestamp: Date.now(), direction: "SHORT", outcome: "Down",
         confidence: 95, edge: signal.edge,
-        price: downBuyPrice, size, cost: downCost,
+        price: downBuyPrice, size: downSize, cost: downCost,
         orderId: downOrder.value.orderID, marketSlug: marketData.marketSlug
       });
       this.positionTracker.addPosition({
         orderId: downOrder.value.orderID, direction: "SHORT", outcome: "Down",
-        price: downBuyPrice, size, confidence: 95, edge: signal.edge,
+        price: downBuyPrice, size: downSize, confidence: 95, edge: signal.edge,
         marketSlug: marketData.marketSlug, marketEndTime: marketData.marketEndTime || null,
         priceToBeat, upPrice, downPrice,
         indicators: {}, bullScore: 0, bearScore: 0,
@@ -537,7 +540,7 @@ export class TradingEngine {
 
     return {
       success: true,
-      reason: `💰 ARB: Up ${size}x @ $${upBuyPrice.toFixed(3)} + Down ${size}x @ $${downBuyPrice.toFixed(3)} = $${totalCost.toFixed(2)} | ${upOk && downOk ? 'BOTH LEGS ✅' : 'PARTIAL ⚠️'}`
+      reason: `💰 ARB: Up ${upSize}x @ $${upBuyPrice.toFixed(3)} + Down ${downSize}x @ $${downBuyPrice.toFixed(3)} = $${totalCost.toFixed(2)} | ${upOk && downOk ? 'BOTH LEGS ✅' : 'PARTIAL ⚠️'}`
     };
   }
 
