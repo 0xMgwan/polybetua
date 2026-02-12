@@ -44,23 +44,23 @@ export class TradingEngine {
     this.positionTracker = new PositionTracker();
     
     // ═══ STRATEGY 1: PURE ARB ══════════════════════════
-    this.ARB_MAX_SUM = 0.975;        // Up+Down must be < 97.5¢ (2.5¢ gross profit/share)
+    this.ARB_MAX_SUM = 0.95;         // Up+Down must be < 95¢ (5¢ gross profit/share — covers fees)
     this.ARB_SIZE = 5;               // $5 per arb (split across both sides)
-    this.ARB_MIN_PROFIT = 0.005;     // Min $0.005 profit per share after fees
+    this.ARB_MIN_PROFIT = 0.015;     // Min 1.5¢ profit per share AFTER fees (was 0.5¢ — too thin)
     
     // ═══ STRATEGY 2: EXTREME VALUE ═════════════════════
-    this.EXTREME_MAX_PRICE = 0.10;   // Token must be < 10¢
-    this.EXTREME_MIN_BTC_MOVE = 0.15;// BTC must confirm direction (>0.15%)
+    this.EXTREME_MAX_PRICE = 0.20;   // Token must be < 20¢ (was 10¢ — too strict, never fires)
+    this.EXTREME_MIN_BTC_MOVE = 0.12;// BTC must confirm direction (>0.12% — relaxed)
     this.EXTREME_SIZE = 3;           // $3 per extreme value bet
     
     // ═══ STRATEGY 3: CONFIRMED MOVE ════════════════════
-    this.MOVE_MIN_BTC_PCT = 0.25;    // BTC must move >0.25% (tighter than v5)
-    this.MOVE_STRONG_PCT = 0.40;     // Strong move threshold
-    this.MOVE_MAX_TOKEN = 0.35;      // Token must be < 35¢ (tighter — more lag required)
-    this.MOVE_MIN_TOKEN = 0.05;      // Ignore dust
+    this.MOVE_MIN_BTC_PCT = 0.15;    // BTC must move >0.15% (was 0.25% — too strict, never fired)
+    this.MOVE_STRONG_PCT = 0.30;     // Strong move threshold (was 0.40%)
+    this.MOVE_MAX_TOKEN = 0.45;      // Token must be < 45¢ (was 35¢ — too strict)
+    this.MOVE_MIN_TOKEN = 0.03;      // Ignore dust
     this.MOVE_SIZE = 4;              // $4 per confirmed move
     this.MOVE_SIZE_STRONG = 6;       // $6 on strong moves
-    this.MOVE_MIN_EDGE = 0.20;       // Need 20% edge (higher than v5's 15% to cover fees)
+    this.MOVE_MIN_EDGE = 0.15;       // Need 15% edge (was 20% — too strict with fees accounted)
     
     // ═══ TIMING ════════════════════════════════════════
     this.MIN_BUY_COOLDOWN = 15000;   // 15s cooldown (faster for arb)
