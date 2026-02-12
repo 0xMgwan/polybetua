@@ -50,11 +50,12 @@ export class TradingEngine {
     
     // ═══ STRATEGY 2: EXTREME VALUE ═════════════════════
     this.EXTREME_MAX_PRICE = 0.20;   // Token must be < 20¢ (was 10¢ — too strict, never fires)
-    this.EXTREME_MIN_BTC_MOVE = 0.12;// BTC must confirm direction (>0.12% — relaxed)
+    this.EXTREME_MIN_BTC_MOVE = 0.06;// BTC must confirm direction (>0.06% — was 0.12%, too strict)
+    this.DEEP_VALUE_MAX = 0.05;      // Tokens under 5¢ don't need BTC confirmation (20:1+ R:R)
     this.EXTREME_SIZE = 2;           // $2 per extreme value bet (small — focus is arb)
     
     // ═══ STRATEGY 3: CONFIRMED MOVE ════════════════════
-    this.MOVE_MIN_BTC_PCT = 0.15;    // BTC must move >0.15% (was 0.25% — too strict, never fired)
+    this.MOVE_MIN_BTC_PCT = 0.08;    // BTC must move >0.08% (was 0.15% — too strict, never fired)
     this.MOVE_STRONG_PCT = 0.30;     // Strong move threshold (was 0.40%)
     this.MOVE_MAX_TOKEN = 0.45;      // Token must be < 45¢ (was 35¢ — too strict)
     this.MOVE_MIN_TOKEN = 0.03;      // Ignore dust
@@ -273,7 +274,10 @@ export class TradingEngine {
       const extremeToken = btcUp ? "Up" : "Down";
       const extremePrice = btcUp ? upPrice : downPrice;
 
-      if (extremePrice <= this.EXTREME_MAX_PRICE && extremePrice > 0.01 && btcMoveAbs >= this.EXTREME_MIN_BTC_MOVE) {
+      // Deep value: tokens under 5¢ don't need BTC confirmation (R:R is 20:1+)
+      const isDeepValue = extremePrice <= this.DEEP_VALUE_MAX && extremePrice > 0.01;
+      const isExtremeWithMove = extremePrice <= this.EXTREME_MAX_PRICE && extremePrice > 0.01 && btcMoveAbs >= this.EXTREME_MIN_BTC_MOVE;
+      if (isDeepValue || isExtremeWithMove) {
         const fee = this._takerFee(extremePrice);
         const netWin = 1.0 - extremePrice - fee;
         const netLoss = extremePrice + fee;
