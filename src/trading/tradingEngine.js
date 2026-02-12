@@ -51,15 +51,15 @@ export class TradingEngine {
     // ═══ STRATEGY 2: EXTREME VALUE ═════════════════════
     this.EXTREME_MAX_PRICE = 0.20;   // Token must be < 20¢ (was 10¢ — too strict, never fires)
     this.EXTREME_MIN_BTC_MOVE = 0.12;// BTC must confirm direction (>0.12% — relaxed)
-    this.EXTREME_SIZE = 3;           // $3 per extreme value bet
+    this.EXTREME_SIZE = 2;           // $2 per extreme value bet (small — focus is arb)
     
     // ═══ STRATEGY 3: CONFIRMED MOVE ════════════════════
     this.MOVE_MIN_BTC_PCT = 0.15;    // BTC must move >0.15% (was 0.25% — too strict, never fired)
     this.MOVE_STRONG_PCT = 0.30;     // Strong move threshold (was 0.40%)
     this.MOVE_MAX_TOKEN = 0.45;      // Token must be < 45¢ (was 35¢ — too strict)
     this.MOVE_MIN_TOKEN = 0.03;      // Ignore dust
-    this.MOVE_SIZE = 4;              // $4 per confirmed move
-    this.MOVE_SIZE_STRONG = 6;       // $6 on strong moves
+    this.MOVE_SIZE = 2;              // $2 per confirmed move (small — focus is arb)
+    this.MOVE_SIZE_STRONG = 2;       // $2 even on strong moves (protect arb capital)
     this.MOVE_MIN_EDGE = 0.15;       // Need 15% edge (was 20% — too strict with fees accounted)
     
     // ═══ TIMING ════════════════════════════════════════
