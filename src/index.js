@@ -537,7 +537,14 @@ const chainlinkPriceBuffer = {
 };
 
 async function main() {
-  const binanceStream = startBinanceTradeStream({ symbol: CONFIG.symbol });
+  // Start per-asset Binance WS streams for real-time spot prices
+  const assetStreams = new Map(); // assetName → { ws stream }
+  for (const asset of CONFIG.assets) {
+    assetStreams.set(asset.name, startBinanceTradeStream({ symbol: asset.binanceSymbol }));
+  }
+  console.log(`[Multi-Asset] Started Binance WS streams: ${CONFIG.assets.map(a => a.binanceSymbol).join(', ')}`);
+
+  const binanceStream = assetStreams.get("BTC"); // BTC stream for backward compat
   const polymarketLiveStream = startPolymarketChainlinkPriceStream({});
   const chainlinkStream = startChainlinkPriceStream({});
 
@@ -565,6 +572,9 @@ async function main() {
   let prevSpotPrice = null;
   let prevCurrentPrice = null;
   let priceToBeatState = { slug: null, value: null, setAtMs: null };
+
+  // Per-asset price-to-beat tracking for directional strategies
+  const assetPriceToBeat = new Map(); // assetName → { slug, value, setAtMs }
 
   const header = [
     "timestamp",
@@ -795,20 +805,39 @@ async function main() {
         };
 
         // ═══ MULTI-ASSET TRADING LOOP ═══════════════════════════
-        // Evaluate trades on ALL assets (BTC, SOL, XRP) in sequence
+        // Evaluate trades on ALL assets (BTC, ETH, SOL, XRP) in sequence
+        // Each asset gets its own Binance WS spot price + price-to-beat
         for (const snap of allAssetSnapshots) {
           if (!snap.ok) continue;
 
           const assetSlug = String(snap.market?.slug ?? "");
           const assetEndTime = snap.market?.endDate ? new Date(snap.market.endDate).getTime() : null;
+          const assetStartMs = snap.market?.eventStartTime ? new Date(snap.market.eventStartTime).getTime() : null;
           const assetUp = snap.prices?.up ?? null;
           const assetDown = snap.prices?.down ?? null;
 
-          // For BTC, use BTC spot price + price-to-beat for directional strategies
-          // For SOL/XRP, only arb works (no per-asset price feed yet), so spotPrice=null
+          // Get per-asset spot price from its own Binance WS stream
+          const assetWsStream = assetStreams.get(snap.asset);
+          const assetWsTick = assetWsStream?.getLast();
+          const assetSpotPrice = assetWsTick?.price ?? null;
+
+          // Per-asset price-to-beat tracking
+          let aptb = assetPriceToBeat.get(snap.asset) || { slug: null, value: null, setAtMs: null };
+          if (assetSlug && aptb.slug !== assetSlug) {
+            aptb = { slug: assetSlug, value: null, setAtMs: null };
+          }
+          if (aptb.slug && aptb.value === null && assetSpotPrice !== null) {
+            const nowMs = Date.now();
+            const okToLatch = assetStartMs === null ? true : nowMs >= assetStartMs;
+            if (okToLatch) {
+              aptb = { slug: aptb.slug, value: Number(assetSpotPrice), setAtMs: nowMs };
+            }
+          }
+          assetPriceToBeat.set(snap.asset, aptb);
+          const assetPtb = aptb.slug === assetSlug ? aptb.value : null;
+
+          // For BTC, use full BTC indicators; other assets use price-only indicators
           const isBtc = snap.asset === "BTC";
-          const assetSpotPrice = isBtc ? spotPrice : null;
-          const assetPtb = isBtc ? ptb : null;
 
           const assetMarketData = {
             upPrice: assetUp,
@@ -823,10 +852,10 @@ async function main() {
             assetName: snap.asset  // Pass asset name for logging
           };
 
-          // Only pass BTC indicators for BTC; other assets get empty indicators
+          // BTC gets full TA indicators; other assets get empty (arb + move strategies still work via spotPrice)
           const assetIndicators = isBtc ? btcIndicators : {};
 
-          const result = await evaluateAndTrade(prediction, assetMarketData, isBtc ? currentPrice : null, assetIndicators, assetPtb);
+          const result = await evaluateAndTrade(prediction, assetMarketData, isBtc ? currentPrice : assetSpotPrice, assetIndicators, assetPtb);
           multiAssetResults.push({ asset: snap.asset, result });
 
           // Use the first successful trade for display, or BTC result as fallback
@@ -1136,7 +1165,7 @@ const server = createServer((req, res) => {
 <head><title>Crypto 15m ARB HUNTER</title></head>
 <body>
 <h1>🤖 Crypto 15m ARB HUNTER v6</h1>
-<p>Scanning: <strong>BTC, SOL, XRP</strong> — 15-minute Up/Down markets</p>
+<p>Scanning: <strong>BTC, ETH, SOL, XRP</strong> — 15-minute Up/Down markets</p>
 <ul>
   <li><a href="/stats">📊 Current Stats</a></li>
   <li><a href="/history">📜 Trade History</a></li>

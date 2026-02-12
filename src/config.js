@@ -31,6 +31,7 @@ export const CONFIG = {
   // Multi-asset 15m markets — scanned in parallel for arb opportunities
   assets: [
     { name: "BTC", seriesId: "10192", seriesSlug: "btc-up-or-down-15m", binanceSymbol: "BTCUSDT", chainlinkFeed: "BTC/USD" },
+    { name: "ETH", seriesId: "10191", seriesSlug: "eth-up-or-down-15m", binanceSymbol: "ETHUSDT", chainlinkFeed: "ETH/USD" },
     { name: "SOL", seriesId: "10423", seriesSlug: "sol-up-or-down-15m", binanceSymbol: "SOLUSDT", chainlinkFeed: "SOL/USD" },
     { name: "XRP", seriesId: "10422", seriesSlug: "xrp-up-or-down-15m", binanceSymbol: "XRPUSDT", chainlinkFeed: "XRP/USD" }
   ],
