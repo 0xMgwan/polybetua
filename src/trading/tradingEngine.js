@@ -45,7 +45,7 @@ export class TradingEngine {
     
     // ═══ STRATEGY 1: PURE ARB ══════════════════════════
     this.ARB_MAX_SUM = 0.95;         // Up+Down must be < 95¢ (5¢ gross profit/share — covers fees)
-    this.ARB_SIZE = 5;               // $5 per arb (split across both sides)
+    this.ARB_SIZE = 40;              // $40 per arb pair ($20 each side) — profit scales with size
     this.ARB_MIN_PROFIT = 0.015;     // Min 1.5¢ profit per share AFTER fees (was 0.5¢ — too thin)
     
     // ═══ STRATEGY 2: EXTREME VALUE ═════════════════════
@@ -69,7 +69,7 @@ export class TradingEngine {
     
     // ═══ GUARDRAILS ═════════════════════════════════════
     this.DAILY_DRAWDOWN_LIMIT = -10; // Stop at -$10 daily
-    this.MAX_EXPOSURE = 20;          // $20 max (higher — arb is hedged)
+    this.MAX_EXPOSURE = 80;          // $80 max — arb is hedged so safe to go higher ($100 balance)
     this.LOSS_STREAK_REDUCE = 4;     // After 4 consecutive losses, reduce size
     
     // ═══ FEE CALCULATION ═══════════════════════════════
