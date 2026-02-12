@@ -28,6 +28,13 @@ export const CONFIG = {
     downOutcomeLabel: process.env.POLYMARKET_DOWN_LABEL || "Down"
   },
 
+  // Multi-asset 15m markets — scanned in parallel for arb opportunities
+  assets: [
+    { name: "BTC", seriesId: "10192", seriesSlug: "btc-up-or-down-15m", binanceSymbol: "BTCUSDT", chainlinkFeed: "BTC/USD" },
+    { name: "SOL", seriesId: "10423", seriesSlug: "sol-up-or-down-15m", binanceSymbol: "SOLUSDT", chainlinkFeed: "SOL/USD" },
+    { name: "XRP", seriesId: "10422", seriesSlug: "xrp-up-or-down-15m", binanceSymbol: "XRPUSDT", chainlinkFeed: "XRP/USD" }
+  ],
+
   chainlink: {
     polygonRpcUrls: (process.env.POLYGON_RPC_URLS || "").split(",").map((s) => s.trim()).filter(Boolean),
     polygonRpcUrl: process.env.POLYGON_RPC_URL || "https://polygon-rpc.com",

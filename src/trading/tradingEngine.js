@@ -94,7 +94,7 @@ export class TradingEngine {
     this.extremeSkipped = 0;         // Extreme value but move too small
     this.moveSkipped = 0;            // Move found but edge/EV too low
     this.lastLogTime = Date.now();
-    this.lastScanLog = 0;            // Last time we logged a scan
+    this.lastScanLog = new Map();    // Per-asset scan log throttle: assetName → timestamp
     this.lastScan = {};              // Last scan data for /debug endpoint
   }
 
@@ -152,6 +152,7 @@ export class TradingEngine {
     }
 
     const sum = upPrice + downPrice;
+    const assetTag = marketData.assetName ? `[${marketData.assetName}]` : "";
 
     // ═══ GUARDRAILS ═══════════════════════════════════════════
     const totalExposure = this.positionTracker.openPositions.reduce((sum, pos) => sum + pos.cost, 0);
@@ -213,10 +214,12 @@ export class TradingEngine {
       feeUp: feeUp.toFixed(4), feeDown: feeDown.toFixed(4)
     };
 
-    // Log scan every 60 seconds so we can see what's happening
-    if ((now - this.lastScanLog) > 60000) {
-      console.log(`[ArbHunter] 🔍 Scan: Up $${upPrice.toFixed(3)} + Down $${downPrice.toFixed(3)} = $${sum.toFixed(3)} | Threshold: $${this.ARB_MAX_SUM} | BTC: ${btcMovePct >= 0 ? '+' : ''}${btcMovePct.toFixed(3)}% | Min ${candleMinute}/15`);
-      this.lastScanLog = now;
+    // Log scan every 60 seconds per asset so we can see what's happening
+    const assetName = marketData.assetName || "UNK";
+    const lastLogForAsset = this.lastScanLog.get(assetName) || 0;
+    if ((now - lastLogForAsset) > 60000) {
+      console.log(`[ArbHunter] 🔍 ${assetTag} Scan: Up $${upPrice.toFixed(3)} + Down $${downPrice.toFixed(3)} = $${sum.toFixed(3)} | Threshold: $${this.ARB_MAX_SUM} | BTC: ${btcMovePct >= 0 ? '+' : ''}${btcMovePct.toFixed(3)}% | Min ${candleMinute}/15`);
+      this.lastScanLog.set(assetName, now);
     }
 
     // ═══════════════════════════════════════════════════════════
@@ -230,14 +233,14 @@ export class TradingEngine {
 
       if (netProfit >= this.ARB_MIN_PROFIT) {
         console.log(`[ArbHunter] ══════════════════════════════════════`);
-        console.log(`[ArbHunter] Up: $${upPrice.toFixed(3)} | Down: $${downPrice.toFixed(3)} | Sum: $${sum.toFixed(3)} | Min ${candleMinute}/15`);
+        console.log(`[ArbHunter] ${assetTag} Up: $${upPrice.toFixed(3)} | Down: $${downPrice.toFixed(3)} | Sum: $${sum.toFixed(3)} | Min ${candleMinute}/15`);
         // Buy the cheaper side (more shares per dollar = more profit)
         const cheaperSide = upPrice <= downPrice ? "Up" : "Down";
         const cheaperPrice = Math.min(upPrice, downPrice);
         const dollars = this.ARB_SIZE;
 
-        console.log(`[ArbHunter] 💰 PURE ARB! Sum $${sum.toFixed(3)} | Gross: ${(grossProfit*100).toFixed(1)}¢ | Fee: ${(totalFee*100).toFixed(1)}¢ | Net: ${(netProfit*100).toFixed(1)}¢/share`);
-        console.log(`[ArbHunter] 💰 Buy ${cheaperSide} @ $${cheaperPrice.toFixed(3)} (cheaper side first) | $${dollars}`);
+        console.log(`[ArbHunter] 💰 ${assetTag} PURE ARB! Sum $${sum.toFixed(3)} | Gross: ${(grossProfit*100).toFixed(1)}¢ | Fee: ${(totalFee*100).toFixed(1)}¢ | Net: ${(netProfit*100).toFixed(1)}¢/share`);
+        console.log(`[ArbHunter] 💰 ${assetTag} Buy ${cheaperSide} @ $${cheaperPrice.toFixed(3)} (cheaper side first) | $${dollars}`);
         console.log(`[ArbHunter] ══════════════════════════════════════`);
 
         return {
@@ -254,7 +257,7 @@ export class TradingEngine {
           arbSum: sum,
           bullScore: 0, bearScore: 0,
           signals: [`sum:$${sum.toFixed(3)}`, `net:${(netProfit*100).toFixed(1)}¢`, `fee:${(totalFee*100).toFixed(1)}¢`],
-          reason: `💰 ARB: Sum $${sum.toFixed(3)} | Net +${(netProfit*100).toFixed(1)}¢/share | ${cheaperSide} @ $${cheaperPrice.toFixed(3)}`
+          reason: `💰 ${assetTag} ARB: Sum $${sum.toFixed(3)} | Net +${(netProfit*100).toFixed(1)}¢/share | ${cheaperSide} @ $${cheaperPrice.toFixed(3)}`
         };
       } else {
         this.arbSkipped++;
@@ -290,9 +293,9 @@ export class TradingEngine {
         const dollars = this.EXTREME_SIZE;
 
         console.log(`[ArbHunter] ══════════════════════════════════════`);
-        console.log(`[ArbHunter] Up: $${upPrice.toFixed(3)} | Down: $${downPrice.toFixed(3)} | Sum: $${sum.toFixed(3)} | Min ${candleMinute}/15`);
-        console.log(`[ArbHunter] 🎰 EXTREME VALUE! ${extremeToken} @ $${extremePrice.toFixed(3)} | BTC ${btcMovePct >= 0 ? '+' : ''}${btcMovePct.toFixed(3)}%`);
-        console.log(`[ArbHunter] 🎰 R:R ${rr}:1 | Win: +${(netWin*100).toFixed(0)}¢ | Lose: -${(netLoss*100).toFixed(0)}¢ | Breakeven: ${breakeven}% WR | $${dollars}`);
+        console.log(`[ArbHunter] ${assetTag} Up: $${upPrice.toFixed(3)} | Down: $${downPrice.toFixed(3)} | Sum: $${sum.toFixed(3)} | Min ${candleMinute}/15`);
+        console.log(`[ArbHunter] 🎰 ${assetTag} EXTREME VALUE! ${extremeToken} @ $${extremePrice.toFixed(3)} | BTC ${btcMovePct >= 0 ? '+' : ''}${btcMovePct.toFixed(3)}%`);
+        console.log(`[ArbHunter] 🎰 ${assetTag} R:R ${rr}:1 | Win: +${(netWin*100).toFixed(0)}¢ | Lose: -${(netLoss*100).toFixed(0)}¢ | Breakeven: ${breakeven}% WR | $${dollars}`);
         console.log(`[ArbHunter] ══════════════════════════════════════`);
 
         return {
@@ -307,7 +310,7 @@ export class TradingEngine {
           extremeDollars: dollars,
           bullScore: 0, bearScore: 0,
           signals: [`${extremeToken}:$${extremePrice.toFixed(3)}`, `RR:${rr}:1`, `BTC:${btcMovePct >= 0 ? '+' : ''}${btcMovePct.toFixed(2)}%`],
-          reason: `🎰 EXTREME ${extremeToken} @ $${extremePrice.toFixed(3)} | R:R ${rr}:1 | BTC ${btcMovePct >= 0 ? '+' : ''}${btcMovePct.toFixed(2)}%`
+          reason: `🎰 ${assetTag} EXTREME ${extremeToken} @ $${extremePrice.toFixed(3)} | R:R ${rr}:1 | BTC ${btcMovePct >= 0 ? '+' : ''}${btcMovePct.toFixed(2)}%`
         };
       }
     }
@@ -343,9 +346,9 @@ export class TradingEngine {
           const rr = ((1 - targetPrice - fee) / (targetPrice + fee)).toFixed(1);
 
           console.log(`[ArbHunter] ══════════════════════════════════════`);
-          console.log(`[ArbHunter] Up: $${upPrice.toFixed(3)} | Down: $${downPrice.toFixed(3)} | Sum: $${sum.toFixed(3)} | Min ${candleMinute}/15`);
-          console.log(`[ArbHunter] 🎯 CONFIRMED MOVE! ${targetOutcome} @ $${targetPrice.toFixed(3)} | BTC ${btcMovePct >= 0 ? '+' : ''}${btcMovePct.toFixed(3)}%`);
-          console.log(`[ArbHunter] 🎯 Edge: ${(probEdge*100).toFixed(0)}% | EV: +${(netEV*100).toFixed(1)}¢/share | R:R ${rr}:1 | Fee: ${(fee*100).toFixed(1)}¢ | $${dollars}${isStrong ? ' STRONG' : ''}`);
+          console.log(`[ArbHunter] ${assetTag} Up: $${upPrice.toFixed(3)} | Down: $${downPrice.toFixed(3)} | Sum: $${sum.toFixed(3)} | Min ${candleMinute}/15`);
+          console.log(`[ArbHunter] 🎯 ${assetTag} CONFIRMED MOVE! ${targetOutcome} @ $${targetPrice.toFixed(3)} | BTC ${btcMovePct >= 0 ? '+' : ''}${btcMovePct.toFixed(3)}%`);
+          console.log(`[ArbHunter] 🎯 ${assetTag} Edge: ${(probEdge*100).toFixed(0)}% | EV: +${(netEV*100).toFixed(1)}¢/share | R:R ${rr}:1 | Fee: ${(fee*100).toFixed(1)}¢ | $${dollars}${isStrong ? ' STRONG' : ''}`);
           console.log(`[ArbHunter] ══════════════════════════════════════`);
 
           return {
@@ -360,7 +363,7 @@ export class TradingEngine {
             moveDollars: dollars,
             bullScore: 0, bearScore: 0,
             signals: [`BTC:${btcMovePct >= 0 ? '+' : ''}${btcMovePct.toFixed(3)}%`, `${targetOutcome}:$${targetPrice.toFixed(3)}`, `EV:+${(netEV*100).toFixed(1)}¢`],
-            reason: `🎯 MOVE ${targetOutcome} @ $${targetPrice.toFixed(3)} | BTC ${btcMovePct >= 0 ? '+' : ''}${btcMovePct.toFixed(2)}% | EV +${(netEV*100).toFixed(1)}¢ | $${dollars}`
+            reason: `🎯 ${assetTag} MOVE ${targetOutcome} @ $${targetPrice.toFixed(3)} | BTC ${btcMovePct >= 0 ? '+' : ''}${btcMovePct.toFixed(2)}% | EV +${(netEV*100).toFixed(1)}¢ | $${dollars}`
           };
         } else if (btcMoveAbs >= this.MOVE_MIN_BTC_PCT) {
           this.moveSkipped++;
@@ -385,7 +388,7 @@ export class TradingEngine {
       this.lastLogTime = Date.now();
     }
 
-    return { shouldTrade: false, reason: `No opportunity (sum $${sum.toFixed(3)}, BTC ${btcMoveAbs.toFixed(2)}%)` };
+    return { shouldTrade: false, reason: `${assetTag} No opportunity (sum $${sum.toFixed(3)}, BTC ${btcMoveAbs.toFixed(2)}%)` };
   }
 
   // ═══════════════════════════════════════════════════════════════

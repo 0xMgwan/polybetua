@@ -288,30 +288,106 @@ function priceToBeatFromPolymarketMarket(market) {
   return parsePriceToBeat(market);
 }
 
-const marketCache = {
-  market: null,
-  fetchedAtMs: 0
-};
+// Per-asset market caches
+const assetMarketCaches = new Map(); // assetName → { market, fetchedAtMs }
 
+async function resolveCurrentMarketForAsset(asset) {
+  const cacheKey = asset.name;
+  const cached = assetMarketCaches.get(cacheKey);
+  const now = Date.now();
+
+  if (cached && cached.market && now - cached.fetchedAtMs < CONFIG.pollIntervalMs) {
+    return cached.market;
+  }
+
+  const events = await fetchLiveEventsBySeriesId({ seriesId: asset.seriesId, limit: 25 });
+  const markets = flattenEventMarkets(events);
+  const picked = pickLatestLiveMarket(markets);
+
+  assetMarketCaches.set(cacheKey, { market: picked, fetchedAtMs: now });
+  return picked;
+}
+
+// Legacy single-asset resolver (used if POLYMARKET_SLUG is set)
 async function resolveCurrentBtc15mMarket() {
   if (CONFIG.polymarket.marketSlug) {
     return await fetchMarketBySlug(CONFIG.polymarket.marketSlug);
   }
+  return resolveCurrentMarketForAsset(CONFIG.assets[0]);
+}
 
-  if (!CONFIG.polymarket.autoSelectLatest) return null;
+async function fetchPolymarketSnapshotForAsset(asset) {
+  const market = await resolveCurrentMarketForAsset(asset);
+  if (!market) return { ok: false, reason: "market_not_found", asset: asset.name };
 
-  const now = Date.now();
-  if (marketCache.market && now - marketCache.fetchedAtMs < CONFIG.pollIntervalMs) {
-    return marketCache.market;
+  const outcomes = Array.isArray(market.outcomes) ? market.outcomes : (typeof market.outcomes === "string" ? JSON.parse(market.outcomes) : []);
+  const outcomePrices = Array.isArray(market.outcomePrices)
+    ? market.outcomePrices
+    : (typeof market.outcomePrices === "string" ? JSON.parse(market.outcomePrices) : []);
+
+  const clobTokenIds = Array.isArray(market.clobTokenIds)
+    ? market.clobTokenIds
+    : (typeof market.clobTokenIds === "string" ? JSON.parse(market.clobTokenIds) : []);
+
+  let upTokenId = null;
+  let downTokenId = null;
+  for (let i = 0; i < outcomes.length; i += 1) {
+    const label = String(outcomes[i]);
+    const tokenId = clobTokenIds[i] ? String(clobTokenIds[i]) : null;
+    if (!tokenId) continue;
+    if (label.toLowerCase() === CONFIG.polymarket.upOutcomeLabel.toLowerCase()) upTokenId = tokenId;
+    if (label.toLowerCase() === CONFIG.polymarket.downOutcomeLabel.toLowerCase()) downTokenId = tokenId;
   }
 
-  const events = await fetchLiveEventsBySeriesId({ seriesId: CONFIG.polymarket.seriesId, limit: 25 });
-  const markets = flattenEventMarkets(events);
-  const picked = pickLatestLiveMarket(markets);
+  const upIndex = outcomes.findIndex((x) => String(x).toLowerCase() === CONFIG.polymarket.upOutcomeLabel.toLowerCase());
+  const downIndex = outcomes.findIndex((x) => String(x).toLowerCase() === CONFIG.polymarket.downOutcomeLabel.toLowerCase());
 
-  marketCache.market = picked;
-  marketCache.fetchedAtMs = now;
-  return picked;
+  const gammaYes = upIndex >= 0 ? Number(outcomePrices[upIndex]) : null;
+  const gammaNo = downIndex >= 0 ? Number(outcomePrices[downIndex]) : null;
+
+  if (!upTokenId || !downTokenId) {
+    return { ok: false, reason: "missing_token_ids", asset: asset.name, market, outcomes, clobTokenIds, outcomePrices };
+  }
+
+  let upBuy = null;
+  let downBuy = null;
+  let upBookSummary = { bestBid: null, bestAsk: null, spread: null, bidLiquidity: null, askLiquidity: null };
+  let downBookSummary = { bestBid: null, bestAsk: null, spread: null, bidLiquidity: null, askLiquidity: null };
+
+  try {
+    const [yesBuy, noBuy, upBook, downBook] = await Promise.all([
+      fetchClobPrice({ tokenId: upTokenId, side: "buy" }),
+      fetchClobPrice({ tokenId: downTokenId, side: "buy" }),
+      fetchOrderBook({ tokenId: upTokenId }),
+      fetchOrderBook({ tokenId: downTokenId })
+    ]);
+    upBuy = yesBuy;
+    downBuy = noBuy;
+    upBookSummary = summarizeOrderBook(upBook);
+    downBookSummary = summarizeOrderBook(downBook);
+  } catch {
+    upBuy = null;
+    downBuy = null;
+  }
+
+  return {
+    ok: true,
+    asset: asset.name,
+    market,
+    tokens: { upTokenId, downTokenId },
+    prices: { up: upBuy ?? gammaYes, down: downBuy ?? gammaNo },
+    orderbook: { up: upBookSummary, down: downBookSummary }
+  };
+}
+
+async function fetchAllAssetSnapshots() {
+  const results = await Promise.allSettled(
+    CONFIG.assets.map(asset => fetchPolymarketSnapshotForAsset(asset))
+  );
+  return results.map((r, i) => {
+    if (r.status === "fulfilled") return r.value;
+    return { ok: false, reason: r.reason?.message || "fetch_failed", asset: CONFIG.assets[i].name };
+  });
 }
 
 async function fetchPolymarketSnapshot() {
@@ -524,12 +600,13 @@ async function main() {
           ? Promise.resolve({ price: chainlinkWsPrice, updatedAt: chainlinkWsTick?.updatedAt ?? null, source: "chainlink_ws" })
           : fetchChainlinkBtcUsd();
 
-      const [klines1mRaw, klines5mRaw, lastPriceRaw, chainlink, poly] = await Promise.all([
+      const [klines1mRaw, klines5mRaw, lastPriceRaw, chainlink, poly, allAssetSnapshots] = await Promise.all([
         fetchKlines({ interval: "1m", limit: 240 }),
         fetchKlines({ interval: "5m", limit: 200 }),
         fetchLastPrice(),
         chainlinkPromise,
-        fetchPolymarketSnapshot()
+        fetchPolymarketSnapshot(),
+        fetchAllAssetSnapshots()
       ]);
 
       // Add Chainlink price to buffer for synthetic klines
@@ -683,40 +760,23 @@ async function main() {
       const marketStartMs = poly.ok && poly.market?.eventStartTime ? new Date(poly.market.eventStartTime).getTime() : null;
 
       let tradeResult = null;
-      if (tradingStatus?.enabled && poly.ok) {
-        // Check if any positions should be resolved
+      const multiAssetResults = []; // Track results from all assets
+      if (tradingStatus?.enabled) {
+        // Check if any positions should be resolved (uses BTC price)
         const ptb = priceToBeatState.slug === marketSlug ? priceToBeatState.value : null;
         checkResolutions(currentPrice, ptb);
         cleanupStalePositions();
         
-        // Check for stop-loss triggers (20% loss)
-        const stopLossAlerts = checkStopLoss({ upPrice: marketUp, downPrice: marketDown });
-        if (stopLossAlerts.length > 0) {
-          console.log(`[WARNING] ${stopLossAlerts.length} position(s) triggering stop-loss!`);
+        // Check for stop-loss triggers (20% loss) using BTC market prices
+        if (poly.ok) {
+          const stopLossAlerts = checkStopLoss({ upPrice: marketUp, downPrice: marketDown });
+          if (stopLossAlerts.length > 0) {
+            console.log(`[WARNING] ${stopLossAlerts.length} position(s) triggering stop-loss!`);
+          }
         }
 
-        const prediction = {
-          longPct: pLong ? pLong * 100 : 0,
-          shortPct: pShort ? pShort * 100 : 0
-        };
-
-        // Parse market end time for position tracking
-        const marketEndTime = poly.market?.endDate ? new Date(poly.market.endDate).getTime() : null;
-
-        const marketData = {
-          upPrice: marketUp,
-          downPrice: marketDown,
-          upTokenId: poly.tokens?.upTokenId,
-          downTokenId: poly.tokens?.downTokenId,
-          marketSlug: marketSlug,
-          marketEndTime: marketEndTime,
-          spread: poly.orderbook?.up?.spread ?? null,
-          priceToBeat: ptb,
-          spotPrice: spotPrice       // Binance real-time BTC price
-        };
-
-        // Pass indicator data for INDICATOR-FIRST direction decision
-        const indicators = {
+        // BTC indicators (used for BTC directional strategies; arb doesn't need them)
+        const btcIndicators = {
           priceVsVwap: (lastPrice && vwapNow) ? lastPrice - vwapNow : undefined,
           vwapSlope: vwapSlope,
           rsi: rsiNow,
@@ -729,7 +789,54 @@ async function main() {
           lastPrice: lastPrice
         };
 
-        tradeResult = await evaluateAndTrade(prediction, marketData, currentPrice, indicators, ptb);
+        const prediction = {
+          longPct: pLong ? pLong * 100 : 0,
+          shortPct: pShort ? pShort * 100 : 0
+        };
+
+        // ═══ MULTI-ASSET TRADING LOOP ═══════════════════════════
+        // Evaluate trades on ALL assets (BTC, SOL, XRP) in sequence
+        for (const snap of allAssetSnapshots) {
+          if (!snap.ok) continue;
+
+          const assetSlug = String(snap.market?.slug ?? "");
+          const assetEndTime = snap.market?.endDate ? new Date(snap.market.endDate).getTime() : null;
+          const assetUp = snap.prices?.up ?? null;
+          const assetDown = snap.prices?.down ?? null;
+
+          // For BTC, use BTC spot price + price-to-beat for directional strategies
+          // For SOL/XRP, only arb works (no per-asset price feed yet), so spotPrice=null
+          const isBtc = snap.asset === "BTC";
+          const assetSpotPrice = isBtc ? spotPrice : null;
+          const assetPtb = isBtc ? ptb : null;
+
+          const assetMarketData = {
+            upPrice: assetUp,
+            downPrice: assetDown,
+            upTokenId: snap.tokens?.upTokenId,
+            downTokenId: snap.tokens?.downTokenId,
+            marketSlug: assetSlug,
+            marketEndTime: assetEndTime,
+            spread: snap.orderbook?.up?.spread ?? null,
+            priceToBeat: assetPtb,
+            spotPrice: assetSpotPrice,
+            assetName: snap.asset  // Pass asset name for logging
+          };
+
+          // Only pass BTC indicators for BTC; other assets get empty indicators
+          const assetIndicators = isBtc ? btcIndicators : {};
+
+          const result = await evaluateAndTrade(prediction, assetMarketData, isBtc ? currentPrice : null, assetIndicators, assetPtb);
+          multiAssetResults.push({ asset: snap.asset, result });
+
+          // Use the first successful trade for display, or BTC result as fallback
+          if (result?.traded && !tradeResult?.traded) {
+            tradeResult = result;
+          }
+          if (isBtc && !tradeResult) {
+            tradeResult = result;
+          }
+        }
       }
 
       if (marketSlug && priceToBeatState.slug !== marketSlug) {
@@ -822,6 +929,18 @@ async function main() {
         const stats = getTradingStats();
         const statusColor = tradingStatus.dryRun ? ANSI.yellow : ANSI.green;
         tradingLines.push(kv("TRADING:", `${statusColor}ARB HUNTER v6${ANSI.reset} ${ANSI.dim}(arb + extreme value + confirmed moves)${ANSI.reset}`));
+        
+        // Multi-asset scanning status
+        const assetSummaries = allAssetSnapshots.filter(s => s.ok).map(s => {
+          const up = s.prices?.up ?? 0;
+          const dn = s.prices?.down ?? 0;
+          const sm = up + dn;
+          const smColor = sm < 0.97 ? ANSI.green : sm < 0.98 ? ANSI.yellow : ANSI.gray;
+          return `${s.asset}:${smColor}${sm.toFixed(2)}${ANSI.reset}`;
+        });
+        if (assetSummaries.length > 0) {
+          tradingLines.push(kv("Scanning:", assetSummaries.join(" | ")));
+        }
         
         if (stats) {
           // P&L Display
@@ -1014,9 +1133,10 @@ const server = createServer((req, res) => {
       const html = `
 <!DOCTYPE html>
 <html>
-<head><title>BTC 15m Trading Bot</title></head>
+<head><title>Crypto 15m ARB HUNTER</title></head>
 <body>
-<h1>🤖 BTC 15m Trading Bot</h1>
+<h1>🤖 Crypto 15m ARB HUNTER v6</h1>
+<p>Scanning: <strong>BTC, SOL, XRP</strong> — 15-minute Up/Down markets</p>
 <ul>
   <li><a href="/stats">📊 Current Stats</a></li>
   <li><a href="/history">📜 Trade History</a></li>
