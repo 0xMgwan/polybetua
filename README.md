@@ -1,45 +1,48 @@
-# Polymarket BTC 15m Auto-Trading Bot — DipArb v2
+# Polymarket BTC 15m Auto-Trading Bot — ARB HUNTER v6
 
-A real-time auto-trading bot for Polymarket **"Bitcoin Up or Down" 15-minute** markets using **hedged pair trading (DipArb)** to lock in guaranteed profits.
+A real-time auto-trading bot for Polymarket **"Bitcoin Up or Down" 15-minute** markets using **3 profit strategies**: pure arbitrage (guaranteed), extreme value (high R:R), and confirmed moves (latency edge).
 
 ## Features
 
-- **Hedged Pair Trading** - Buys both sides cheap to lock in guaranteed profit when pair cost < $1.00
-- **Strict Hedging** - Both sides must be ≤35¢ to enter; simulates pair cost before every buy
-- **Quantity Balancing** - Forces balanced positions (equal qty on both sides) for guaranteed payoff
-- **Profit Locking** - Stops buying once profit is mathematically guaranteed
-- **LONG Bias Reduction** - Blocks LONG buys after consecutive Down wins (unless super cheap ≤28¢)
-- **Momentum Filter** - Requires ≥0.15% BTC move to filter flat/low-vol windows
-- **Position Tracking** - Tracks open positions, P&L, win rate, and streaks
-- **Live Dashboard** - Real-time terminal display with window state, pair cost, and guaranteed profit
+- **Pure Arbitrage** - Buy both sides when sum < $0.97 → guaranteed profit when one settles at $1.00
+- **Extreme Value** - Tokens under 5¢ with massive R:R (20:1+), no BTC confirmation needed
+- **Confirmed Moves** - BTC moved >0.08% + cheap token = latency edge with fee awareness
+- **Deep Value Guard** - Extreme value only trades if arb is impossible (sum > $0.98) or window closing (min > 10)
+- **Simultaneous Execution** - Arb trades buy both sides at once via Promise.allSettled
+- **Position Tracking** - Tracks open positions, P&L, win rate, and strategy breakdown
+- **Live Dashboard** - Real-time terminal display with strategy stats (Arb/Extreme/Move)
+- **Debug Endpoint** - `/debug` shows real-time market data and why trades fire/skip
 - **Railway Ready** - Deploy to Railway for 24/7 operation
 
-## How It Works (DipArb v2)
+## How It Works (ARB HUNTER v6)
 
-1. Bot monitors Polymarket BTC 15-minute Up/Down markets
-2. Waits for one side to become cheap (≤35¢) with BTC momentum (≥0.15% move)
-3. **Leg 1**: Buys the cheap side ($3)
-4. **Leg 2**: Waits for the other side to become cheap (≤35¢), then buys it ($3)
-5. **Profit Lock**: Once min(qtyUp, qtyDown) × $1.00 > totalSpent, stops buying
-6. **Resolution**: Market resolves, bot collects guaranteed profit
-7. If Leg 2 never fills: unhedged bet (max $3 loss, capped by FIX 7)
+### Strategy 1: PURE ARB (Guaranteed Profit)
+1. Bot scans every market for sum < $0.97 (Up + Down < 97¢)
+2. **Gross profit**: $1.00 - sum per share (e.g., sum $0.83 = 17¢/share profit)
+3. **Buys both sides simultaneously** at $40/pair ($20 each side)
+4. One side always settles at $1.00, other at $0.00 → guaranteed net profit
+5. **Example**: Sum $0.83, 47 shares each side = +$7.71 profit (14¢ × 47 shares)
 
-## DipArb v2 Rules (7 Fixes)
+### Strategy 2: EXTREME VALUE (Asymmetric R:R)
+1. **Deep Value** (tokens < 5¢): No BTC confirmation needed (20:1+ R:R)
+2. **Extreme Value** (tokens < 20¢): Requires BTC move > 0.06% confirmation
+3. Risk $0.05, win $0.95 → 19:1 R:R, only need 5% win rate
+4. Trades $2 per bet (small, to protect arb capital)
+5. Guard: Only fires if sum > $0.98 (arb impossible) OR minute > 10 (arb window closing)
 
-| Fix | Rule | Value |
-|-----|------|-------|
-| **1** | Strict Hedging | Both sides ≤$0.35 to buy; simulate pair cost before each buy |
-| **2** | Qty Balance | Always buy the side with LOWER qty first |
-| **3** | Profit Lock | Stop buying once min(qty) × $1.00 > totalSpent |
-| **4** | LONG Bias | Block LONG after 2+ Down wins (unless ≤$0.28) |
-| **5** | Wick Filter | Require ≥0.15% BTC move for initial entry |
-| **6** | Reduced Frequency | Don't start new positions after minute 7; 45s cooldown |
-| **7** | No Piling | Max 1 unhedged buy ($3 risk); then WAIT for hedge or skip |
+### Strategy 3: CONFIRMED MOVE (Latency Edge)
+1. BTC moved > 0.08% from candle open
+2. Winning token < 45¢ (cheap enough to profit after fees)
+3. Expected value calculation: `EV = (1 - price - fee) × prob - (price + fee) × (1 - prob)`
+4. Trades $2 per bet (small, to protect arb capital)
+5. Only if edge > 15% and EV > 0
 
-**Sizing:**
-- Per buy: $3
-- Per window: $8 max
-- Circuit breaker: $15 total open exposure
+**Sizing & Guardrails:**
+- Arb: $40/pair ($20 each side) — profit scales linearly
+- Extreme: $2 per trade
+- Move: $2 per trade
+- Max exposure: $80 (arb is hedged, safe to go higher)
+- Daily drawdown limit: -$10 (stops all trading if hit)
 
 ---
 
@@ -77,15 +80,30 @@ Edit `.env` and set your configuration:
 TRADING_ENABLED=true
 TRADING_DRY_RUN=false
 PRIVATE_KEY=your_wallet_private_key_here
+PROXY_WALLET=your_polymarket_wallet_address
 
-# DipArb v2 Parameters (defaults shown)
-# These are now hardcoded in tradingEngine.js but shown here for reference:
-# CHEAP_THRESHOLD=0.35          # Max price to buy any side
-# BUY_SIZE_DOLLARS=3            # $3 per buy
-# MAX_WINDOW_SPEND=8            # $8 max per window
-# MIN_BTC_MOVE_PCT=0.15         # Require 0.15% BTC move for entry
-# SKIP_AFTER_MINUTE=7           # Don't start new positions after min 7
-# MIN_BUY_COOLDOWN=45000        # 45s between buys
+# ARB HUNTER v6 Parameters (hardcoded in tradingEngine.js)
+# PURE ARB
+ARB_MAX_SUM=0.97              # Buy both sides if sum < $0.97
+ARB_SIZE=40                   # $40 per arb pair ($20 each side)
+ARB_MIN_PROFIT=0.015          # Min 1.5¢ profit per share after fees
+
+# EXTREME VALUE
+EXTREME_MAX_PRICE=0.20        # Token < 20¢ with BTC move
+EXTREME_MIN_BTC_MOVE=0.06     # BTC must move > 0.06%
+DEEP_VALUE_MAX=0.05           # Tokens < 5¢ don't need BTC confirmation
+EXTREME_SIZE=2                # $2 per extreme value bet
+
+# CONFIRMED MOVE
+MOVE_MIN_BTC_PCT=0.08         # BTC must move > 0.08%
+MOVE_MAX_TOKEN=0.45           # Token < 45¢
+MOVE_SIZE=2                   # $2 per confirmed move
+MOVE_MIN_EDGE=0.15            # Need 15% edge
+
+# GUARDRAILS
+MAX_EXPOSURE=80               # $80 max open exposure
+DAILY_DRAWDOWN_LIMIT=-10      # Stop at -$10 daily loss
+MIN_BUY_COOLDOWN=15000        # 15s between trades
 ```
 
 > **IMPORTANT:** Never commit your `.env` file. It is already in `.gitignore`.
@@ -241,27 +259,58 @@ src/
     positionTracker.js  # P&L tracking and circuit breaker
 ```
 
-## Troubleshooting
+## Monitoring & Debugging
 
-### Local Development
+### Live Endpoints
 
-- **Bot not trading?** Check that `TRADING_ENABLED=true` and `TRADING_DRY_RUN=false` in your `.env`
-- **"No cheap side"?** Normal - waiting for one side to drop ≤$0.35. Check market prices in the logs
-- **"Only [Up/Down] cheap, waiting for [other side]"?** FIX 7 - bot won't pile into one side. Waiting for the other side to become cheap (≤$0.35) to hedge
-- **"Low volatility"?** BTC hasn't moved ≥0.15% in the last 3 minutes. Bot skips flat windows to avoid weak entries
-- **"Too late for new position"?** Normal - bot doesn't start new positions after minute 7 of the candle (FIX 6)
-- **"Profit locked"?** Good! The bot has locked in guaranteed profit and stopped buying in this window
-- **No Chainlink updates?** Ensure Polygon RPC URLs are configured correctly
+- **`/stats`** - Current trading stats (P&L, win rate, strategy breakdown)
+- **`/pnl`** - Open and closed positions with detailed P&L
+- **`/history`** - Full trade history from journal.json
+- **`/debug`** - Real-time market scan data (prices, sum, BTC move, why trades fire/skip)
+- **`/health`** - Health check with links to all endpoints
 
-### Railway Deployment
+### Troubleshooting
+
+#### No Trades Firing
+
+1. **Check `/debug`** to see what the bot sees:
+   - `sum`: Up + Down prices. Need < $0.97 for arb
+   - `arbWouldTrigger`: true/false — is arb threshold met?
+   - `btcMovePct`: BTC move %. Need > 0.08% for confirmed move
+   - `candleMinute`: Current position in 15-min window (1-15)
+
+2. **Arb not firing?**
+   - Sum is too high (> $0.97). Market is pricing efficiently
+   - Arb windows are rare — may take hours between opportunities
+   - Check `/debug` to confirm sum value
+
+3. **Extreme value not firing?**
+   - Token price > $0.05 (deep value) AND sum < $0.98 (arb possible) AND minute < 10 (arb window open)
+   - OR token price > $0.20 OR BTC move < 0.06%
+   - Deep value guard prevents blocking arb opportunities
+
+4. **Confirmed move not firing?**
+   - BTC move < 0.08% (too small)
+   - Token price > $0.45 (too expensive)
+   - Edge < 15% or EV ≤ 0
+
+#### Trading Issues
+
+- **"Both arb orders failed"?** Network issue or insufficient balance. Check Polymarket wallet balance
+- **"ARB PARTIAL: [side] filled, [side] FAILED"?** One leg filled, other didn't. This is a loss. Check logs for why
+- **"Circuit breaker: $X exposure"?** Total open positions >= $80. Wait for markets to resolve before new trades
+- **"Daily stop: $-X"?** Lost $10+ today. Bot stops trading until next day (UTC)
+- **"Too early (min 0)" or "Too late (min 14)"?** Bot only trades minutes 1-13 of the 15-min candle
+- **"Cooldown"?** 15 seconds between trades. Bot is rate-limiting to avoid API spam
+
+#### Railway Deployment
 
 - **"Cloudflare 403 Forbidden"?** Railway's datacenter IP is blocked. Add `HTTP_PROXY` and `HTTPS_PROXY` env vars with Bright Data credentials
 - **"Maker (Proxy wallet): undefined"?** Add `PROXY_WALLET` env var with your Polymarket wallet address
-- **"Invalid fee rate (0)"?** The bot now fetches fee rates dynamically. If it still fails, ensure `@polymarket/clob-client@^4.14.0` is installed
-- **"Size lower than minimum: 5"?** The bot enforces Polymarket's 5-share minimum. Order size is calculated as `$3 / price` with a floor of 5 shares
-- **"Order created but no orderID returned"?** Check Railway logs for the actual error. Common causes: fee rate, minimum size, or proxy issues
-- **Bot keeps restarting?** Check Railway logs for errors. Common issues: missing env vars, proxy auth failure, or RPC rate limits
-- **Zero trades for 1+ hour?** Check if both sides are cheap (≤$0.35) and BTC is moving. DipArb requires both conditions
+- **"Size lower than minimum: 5"?** Polymarket enforces 5-share minimum. Arb at $40 with prices > $8 will fail
+- **"Order created but no orderID returned"?** Check Railway logs. Common causes: fee rate, minimum size, or proxy timeout
+- **Bot keeps restarting?** Check Railway logs for errors. Common issues: missing env vars, proxy auth failure, RPC rate limits
+- **Zero trades for 2+ hours?** Check `/debug`. If sum is always > $0.98, arb windows aren't appearing in current market conditions
 
 ## Disclaimer
 
