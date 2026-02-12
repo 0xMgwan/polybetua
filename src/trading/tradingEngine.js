@@ -44,7 +44,7 @@ export class TradingEngine {
     this.positionTracker = new PositionTracker();
     
     // ═══ STRATEGY 1: PURE ARB ══════════════════════════
-    this.ARB_MAX_SUM = 0.95;         // Up+Down must be < 95¢ (5¢ gross profit/share — covers fees)
+    this.ARB_MAX_SUM = 0.97;         // Up+Down must be < 97¢ (3¢ gross profit/share — more opportunities)
     this.ARB_SIZE = 40;              // $40 per arb pair ($20 each side) — profit scales with size
     this.ARB_MIN_PROFIT = 0.015;     // Min 1.5¢ profit per share AFTER fees (was 0.5¢ — too thin)
     
